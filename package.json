@@ -1,0 +1,38 @@
+{
+  "name": "brain",
+  "version": "1.0.0",
+  "description": "Local-first always-on daemon for codebase intelligence",
+  "type": "module",
+  "bin": {
+    "brain": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "npx tsc",
+    "start": "node dist/cli/index.js",
+    "dev": "tsx src/cli/index.ts",
+    "test": "tsx test-runner.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@octokit/rest": "^21.0.0",
+    "better-sqlite3": "^11.8.1",
+    "express": "^4.21.2",
+    "kuzu": "^0.11.3",
+    "openai": "^6.37.0",
+    "tree-sitter": "^0.25.0",
+    "tree-sitter-javascript": "^0.25.0",
+    "tree-sitter-python": "^0.25.0",
+    "tree-sitter-typescript": "^0.23.2",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/express": "^5.0.0",
+    "@types/node": "^25.6.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}
