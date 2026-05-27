@@ -1,6 +1,7 @@
 import { getKuzuClient } from '../graph/client.js'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { commitAgentsMd } from '../automation/auto-commit.js'
 
 export interface AgentsContext {
   repoName: string
@@ -60,6 +61,10 @@ export async function generateAgentsMd(
   const content = renderAgentsMd(ctx)
   const outPath = path.join(repoPath, 'AGENTS.md')
   await fs.writeFile(outPath, content, 'utf-8')
+
+  if (process.env.BRAIN_AUTO_COMMIT === 'true') {
+    await commitAgentsMd(repoPath, commitSha)
+  }
 }
 
 function renderAgentsMd(ctx: AgentsContext): string {

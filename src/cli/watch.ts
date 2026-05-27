@@ -3,6 +3,9 @@ import { createWebhookServer } from '../ingestion/webhook.js'
 import { startScheduler } from '../memory/scheduler.js'
 import { initKuzu, closeKuzu } from '../graph/client.js'
 import { initSqlite, closeDb } from '../memory/db.js'
+import { init } from './init.js'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 
 let server: import('node:http').Server | null = null
 let inFlight = 0
@@ -12,9 +15,16 @@ export function trackInFlight(delta: number): void {
 }
 
 export async function watch(cwd: string): Promise<void> {
-  const config = await loadConfig(cwd)
+  const brainDir = path.join(cwd, '.brain')
 
-  const brainDir = cwd
+  try {
+    await fs.access(brainDir)
+  } catch {
+    console.info('[brain] .brain not found — auto-initialising...')
+    await init(cwd)
+  }
+
+  const config = await loadConfig(cwd)
   initKuzu(brainDir)
   initSqlite(brainDir)
 

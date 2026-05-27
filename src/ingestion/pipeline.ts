@@ -11,6 +11,8 @@ import { dispatchHotZoneAlerts } from '../temporal/alert.js'
 import { writeTier1Events, type RawEvent } from '../memory/tier1.js'
 import { resolveCallEdges } from './call-resolver.js'
 import { detectModules } from './module-detector.js'
+import { commentOnPR } from '../automation/pr-commenter.js'
+import { reviewCommit } from '../automation/code-reviewer.js'
 
 export async function processPushEvent(repo: RepoConfig, payload: Record<string, unknown>): Promise<void> {
   const t0 = Date.now()
@@ -89,6 +91,26 @@ export async function processPushEvent(repo: RepoConfig, payload: Record<string,
       repo.name, repo.path, commitSha,
       currentHotZones.map(z => ({ path: z.filePath, velocity: z.velocity })),
     )
+
+    const prNumber = (payload.pull_request as { number?: number })?.number
+    if (prNumber) {
+      commentOnPR(repo, prNumber, commitSha).catch(err =>
+        console.error('[brain/automation] PR comment failed:', err)
+      )
+    }
+
+    if (process.env.OPENAI_API_KEY) {
+      const patchContent = changes.map(c => c.patch ?? '').filter(Boolean).join('\n---\n')
+      if (patchContent) {
+        reviewCommit(repo, commitSha, patchContent).then(result => {
+          console.info(`[brain/code-review] ${result.summary}`)
+          if (result.risks.length > 0) {
+            console.warn('[brain/code-review] risks:', result.risks.join(', '))
+          }
+        }).catch(err => console.error('[brain/code-review] error:', err))
+      }
+    }
+
     console.info(`[brain] AGENTS.md + hotZones done in ${Date.now() - t0}ms`)
   }).catch(err => {
     console.error('[brain/temporal]', err)

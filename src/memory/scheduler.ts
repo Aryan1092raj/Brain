@@ -4,6 +4,7 @@ import { promoteToTier4 } from './tier4.js'
 import { runDecayCycle } from './decay.js'
 import { evictExpiredTier1 } from './tier1.js'
 import { getDb } from './db.js'
+import { sendDailyDigest } from '../automation/digest.js'
 import type { Config } from '../config/schema.js'
 
 const HOUR = 60 * 60 * 1000
@@ -30,7 +31,10 @@ export function startScheduler(config: Config): void {
         getDb().prepare(
           `DELETE FROM tier2_episodes WHERE expires_at < ?`
         ).run(Date.now())
-        console.info(`[brain/scheduler] 24h promotion done for ${repo.name}`)
+        sendDailyDigest(config, repo.name).catch(err =>
+          console.error('[brain/scheduler] digest error:', err)
+        )
+        console.info(`[brain/scheduler] 24h promotion + digest done for ${repo.name}`)
       } catch (err) {
         console.error(`[brain/scheduler] promotion error for ${repo.name}:`, err)
       }

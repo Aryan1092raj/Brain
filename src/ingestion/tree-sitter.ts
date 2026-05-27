@@ -1,6 +1,13 @@
 import Parser from 'tree-sitter'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const TS: any = (await import('tree-sitter-typescript')).default ?? (await import('tree-sitter-typescript'))
+let TS: any
+try {
+  const mod = await import('tree-sitter-typescript')
+  TS = mod.default?.typescript ?? mod.typescript ?? mod.default ?? mod
+} catch (err) {
+  console.warn('[brain] tree-sitter-typescript unavailable, TS/TSX parsing disabled')
+  TS = null
+}
 import JavaScript from 'tree-sitter-javascript'
 import Python from 'tree-sitter-python'
 import fs from 'node:fs/promises'
@@ -38,6 +45,10 @@ function getParser(language: string): Parser | undefined {
   if (PARSERS.has(language)) return PARSERS.get(language)!
   if (!SUPPORTED_LANGUAGES.has(language)) {
     console.warn(`[brain] unsupported language: ${language} — skipping symbol extraction`)
+    return undefined
+  }
+  if ((language === 'typescript' || language === 'tsx') && !TS) {
+    console.warn(`[brain] ${language} parser unavailable`)
     return undefined
   }
   const p = new Parser()
