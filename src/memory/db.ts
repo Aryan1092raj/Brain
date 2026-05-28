@@ -1,9 +1,11 @@
 import Database from 'better-sqlite3'
 import path from 'node:path'
+import fs from 'node:fs'
 
 let _db: Database.Database | null = null
 
 export function initSqlite(brainDir: string): void {
+  fs.mkdirSync(brainDir, { recursive: true })
   const dbPath = path.join(brainDir, 'brain.db')
   _db = new Database(dbPath)
 }

@@ -1,11 +1,13 @@
 import { Database, Connection } from 'kuzu'
 import path from 'node:path'
+import fs from 'node:fs'
 
 let _db: Database | null = null
 let _conn: Connection | null = null
 
 export function initKuzu(brainDir: string): void {
   const dbPath = path.join(brainDir, 'graph', 'brain.kuzu')
+  fs.mkdirSync(path.join(brainDir, 'graph'), { recursive: true })
   _db = new Database(dbPath)
   _conn = new Connection(_db)
 }
