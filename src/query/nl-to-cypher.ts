@@ -57,7 +57,10 @@ Rules:
 export async function executeNLQuery(question: string, repo: string): Promise<string> {
   try {
     const cypher = await translateNLToCypher(question)
-    return `Generated Cypher:\n${cypher}\n\nExecute this query against your graph database with repo parameter: ${repo}`
+    const { getKuzuClient } = await import('../graph/client.js')
+    const db = getKuzuClient()
+    const results = await db.query(cypher, { repo })
+    return JSON.stringify(results, null, 2)
   } catch (err) {
     return `Error: ${err instanceof Error ? err.message : 'Unknown error'}`
   }

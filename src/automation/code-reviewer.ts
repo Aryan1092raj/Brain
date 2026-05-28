@@ -15,14 +15,15 @@ export async function reviewCommit(
 ): Promise<ReviewResult> {
   const { default: OpenAI } = await import('openai')
   const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY || process.env.GROQ_API_KEY || '',
+    apiKey: process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || '',
+    baseURL: 'https://api.groq.com/openai/v1',
   })
 
   const ctx = buildContext(repo.name)
   const contextStr = formatContext(ctx)
 
   const response = await client.chat.completions.create({
-    model: 'gpt-4o',
+    model: 'llama-3.3-70b-versatile',
     messages: [
       {
         role: 'system',
@@ -35,7 +36,6 @@ Return ONLY valid JSON: { summary, risks[], suggestions[], impactedSymbols[] }`,
         content: `${contextStr}\n\n## Diff for ${commitSha.slice(0, 7)}\n\`\`\`\n${patchContent.slice(0, 4000)}\n\`\`\`\n\nReview this commit.`,
       },
     ],
-    response_format: { type: 'json_object' },
     max_tokens: 1000,
   })
 

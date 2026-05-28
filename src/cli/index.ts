@@ -67,7 +67,4 @@ if (cmd === 'init') {
 } else {
   console.info('Usage: brain [init|watch|status|query|ask|mcp]')
   process.exit(1)
-}//test
-//test
-//test
-//test
+}

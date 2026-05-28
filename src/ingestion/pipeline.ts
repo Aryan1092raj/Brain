@@ -9,7 +9,6 @@ import { writeChangeEvents } from '../temporal/tracker.js'
 import { recomputeHotZones, getCurrentHotZones } from '../temporal/hotzone.js'
 import { dispatchHotZoneAlerts } from '../temporal/alert.js'
 import { writeTier1Events, type RawEvent } from '../memory/tier1.js'
-import { resolveCallEdges } from './call-resolver.js'
 import { detectModules } from './module-detector.js'
 import { commentOnPR } from '../automation/pr-commenter.js'
 import { reviewCommit } from '../automation/code-reviewer.js'
@@ -17,15 +16,25 @@ import { reviewCommit } from '../automation/code-reviewer.js'
 export async function processPushEvent(repo: RepoConfig, payload: Record<string, unknown>): Promise<void> {
   const t0 = Date.now()
 
-  const commitMessage = (payload.head_commit as { message?: string })?.message ?? ''
+  const isPR = !!(payload.pull_request)
+  const headCommit = payload.head_commit as Record<string, unknown> ?? {}
+  const prPayload = payload.pull_request as Record<string, unknown> ?? {}
+
+  const commitSha = isPR
+    ? (prPayload.head as Record<string, unknown>)?.sha as string
+    : headCommit.id as string
+  const timestamp = isPR
+    ? new Date((prPayload.updated_at as string) ?? Date.now())
+    : new Date(headCommit.timestamp as string)
+  const author = isPR
+    ? ((prPayload.user as Record<string, unknown>)?.login as string) ?? 'unknown'
+    : ((headCommit.author as Record<string, unknown>)?.name as string) ?? 'unknown'
+  const commitMessage = isPR ? `PR #${prPayload.number}: ${prPayload.title as string}` : (headCommit.message as string) ?? ''
+
   if (commitMessage.includes('[skip ci]') || commitMessage.includes('[brain]')) {
     console.info('[brain] skipping auto-generated commit')
     return
   }
-
-  const commitSha = (payload.head_commit as { id: string }).id
-  const timestamp = new Date((payload.head_commit as { timestamp: string }).timestamp)
-  const author = (payload.head_commit as { author?: { name: string } })?.author?.name ?? 'unknown'
 
   console.info(`[brain] processing commit ${commitSha.slice(0, 7)} for ${repo.name}`)
 
@@ -43,9 +52,8 @@ export async function processPushEvent(repo: RepoConfig, payload: Record<string,
    console.info(`[brain] graph patched in ${patchResult.durationMs}ms — ` +
      `+${patchResult.nodesUpserted} nodes, +${patchResult.edgesUpserted} edges`)
 
-   // Phase 4+: resolve cross-file calls and detect modules
-   resolveCallEdges(repo.name)
-   detectModules(repo.name)
+  // Phase 4+: detect modules
+  detectModules(repo.name)
 
   // Phase 2: write tier-1 events
   const events: RawEvent[] = []

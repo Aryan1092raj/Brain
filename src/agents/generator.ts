@@ -45,6 +45,12 @@ export async function generateAgentsMd(
      ORDER BY count DESC LIMIT 1`, { r: repoName }
   )
 
+  const modulesResult = await db.query<ModuleSummary>(
+    `MATCH (s:Symbol)-[:BelongsTo]->(m:Module {repo: $r})
+     RETURN m.name AS name, count(s) AS symbolCount
+     ORDER BY symbolCount DESC LIMIT 50`, { r: repoName }
+  )
+
   const ctx: AgentsContext = {
     repoName,
     repoPath,
@@ -52,7 +58,7 @@ export async function generateAgentsMd(
     totalFiles: filesResult[0]?.count ?? 0,
     totalSymbols: symbolsResult[0]?.count ?? 0,
     exportedSymbols: exportedResult,
-    modules: [],
+    modules: modulesResult,
     hotFiles,
     lastCommitSha: commitSha,
     generatedAt: new Date().toISOString(),
