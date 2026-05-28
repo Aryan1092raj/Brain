@@ -1,10 +1,5 @@
-import OpenAI from 'openai'
 import { buildContext, formatContext } from '../query/context-builder.js'
 import type { RepoConfig } from '../config/schema.js'
-
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY ?? '',
-})
 
 export interface ReviewResult {
   summary: string
@@ -18,6 +13,11 @@ export async function reviewCommit(
   commitSha: string,
   patchContent: string,
 ): Promise<ReviewResult> {
+  const { default: OpenAI } = await import('openai')
+  const client = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY || process.env.GROQ_API_KEY || '',
+  })
+
   const ctx = buildContext(repo.name)
   const contextStr = formatContext(ctx)
 

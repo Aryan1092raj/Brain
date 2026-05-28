@@ -99,7 +99,7 @@ export async function processPushEvent(repo: RepoConfig, payload: Record<string,
       )
     }
 
-    if (process.env.OPENAI_API_KEY) {
+    if (process.env.OPENAI_API_KEY || process.env.GROQ_API_KEY) {
       const patchContent = changes.map(c => c.patch ?? '').filter(Boolean).join('\n---\n')
       if (patchContent) {
         reviewCommit(repo, commitSha, patchContent).then(result => {
