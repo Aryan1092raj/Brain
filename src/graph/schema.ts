@@ -1,3 +1,12 @@
+import { getKuzuClient } from './client.js'
+
+export async function initGraphSchema(): Promise<void> {
+  const c = getKuzuClient()
+  for (const ddl of KUZU_DDL) {
+    await c.run(ddl)
+  }
+}
+
 export const KUZU_DDL = [
   `CREATE NODE TABLE IF NOT EXISTS File(
     path         STRING,

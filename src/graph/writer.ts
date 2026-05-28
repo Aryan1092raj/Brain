@@ -23,13 +23,13 @@ export async function applySymbolDelta(
       MERGE (f:File {path: $path, repo: $repo})
       ON CREATE SET f.language = $lang, f.created_at = $ts, f.last_touched = $ts
       ON MATCH  SET f.last_touched = $ts, f.decay_score = 1.0
-    `, { path: delta.file, repo: repoName, lang: delta.language, ts: timestamp.toISOString() })
+    `, { path: delta.file, repo: repoName, lang: delta.language, ts: timestamp })
     nodesUpserted++
 
     await db.run(`
       MERGE (c:Commit {sha: $sha, repo: $repo})
       ON CREATE SET c.ts = $ts, c.file_count = $fc
-    `, { sha: commitSha, repo: repoName, ts: timestamp.toISOString(), fc: deltas.length })
+    `, { sha: commitSha, repo: repoName, ts: timestamp, fc: deltas.length })
 
     for (const sym of [...delta.added, ...delta.modified]) {
       const fqn = `${repoName}:${delta.file}:${sym.name}`
@@ -48,7 +48,7 @@ export async function applySymbolDelta(
       `, {
         fqn, name: sym.name, kind: sym.kind, file: delta.file,
         ls: sym.lineStart, le: sym.lineEnd, repo: repoName,
-        exp: sym.isExported, ts: timestamp.toISOString(),
+        exp: sym.isExported, ts: timestamp,
       })
       nodesUpserted++
 

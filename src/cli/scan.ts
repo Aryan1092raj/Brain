@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { loadConfig } from '../config/loader.js'
 import { initKuzu, getKuzuClient } from '../graph/client.js'
+import { initGraphSchema } from '../graph/schema.js'
 import { initSqlite, getDb } from '../memory/db.js'
 import { initMemorySchema } from '../memory/schema.js'
 import { extractSymbolDelta } from '../ingestion/tree-sitter.js'
@@ -65,6 +66,7 @@ export async function scan(cwd: string, _argv: string[]): Promise<void> {
 
   const brainDir = path.join(cwd, '.brain')
   initKuzu(brainDir)
+  await initGraphSchema()
   initSqlite(brainDir)
   initMemorySchema(getDb())
 
