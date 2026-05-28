@@ -38,10 +38,12 @@ function inlineParams(cypher: string, params?: Record<string, unknown>): string 
   let q = cypher
   for (const [k, v] of Object.entries(params)) {
     const escaped = typeof v === 'string'
-      ? `'${v.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
+      ? `'${v.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`
       : v instanceof Date
         ? `'${v.toISOString()}'`
-        : String(v)
+        : typeof v === 'boolean'
+          ? String(v)
+          : String(v)
     q = q.replace(new RegExp(`\\$${k}\\b`, 'g'), () => escaped)
   }
   return q
