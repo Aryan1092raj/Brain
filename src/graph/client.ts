@@ -40,7 +40,7 @@ function inlineParams(cypher: string, params?: Record<string, unknown>): string 
     const escaped = typeof v === 'string'
       ? `'${v.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`
       : v instanceof Date
-        ? `'${v.toISOString()}'`
+        ? `TIMESTAMP '${v.toISOString()}'`
         : typeof v === 'boolean'
           ? String(v)
           : String(v)

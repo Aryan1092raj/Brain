@@ -32,6 +32,9 @@ export async function watch(cwd: string): Promise<void> {
 
   server = app.listen(config.port, () => {
     console.info(`[brain] listening on :${config.port}`)
+    for (const repo of config.repos) {
+      console.info(`[brain] dashboard → http://localhost:${config.port}?repo=${repo.name}`)
+    }
   })
 
   startScheduler(config)

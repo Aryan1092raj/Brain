@@ -12,3 +12,7 @@ brain.config.json
 .opencode.bak/
 *.bak
 open-design/
+npm-link-cache/
+brain@*
+npx
+npx-*

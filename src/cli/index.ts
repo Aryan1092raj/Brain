@@ -28,6 +28,7 @@ import { ask } from './ask.js'
 import { mcp } from './mcp.js'
 import { status } from './status.js'
 import { queryCommand } from './query.js'
+import { scan } from './scan.js'
 
 const cmd = process.argv[2]
 const cwd = process.cwd()
@@ -64,7 +65,12 @@ if (cmd === 'init') {
     console.error('[brain] status failed:', err)
     process.exit(1)
   })
+} else if (cmd === 'scan') {
+  scan(cwd, process.argv.slice(3)).catch(err => {
+    console.error('[brain] scan failed:', err)
+    process.exit(1)
+  })
 } else {
-  console.info('Usage: brain [init|watch|status|query|ask|mcp]')
+  console.info('Usage: brain [init|watch|scan|status|query|ask|mcp]')
   process.exit(1)
 }
