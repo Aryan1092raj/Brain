@@ -42,7 +42,7 @@ function inlineParams(cypher: string, params?: Record<string, unknown>): string 
       : v instanceof Date
         ? `'${v.toISOString()}'`
         : String(v)
-    q = q.replace(new RegExp(`\\$${k}\\b`, 'g'), escaped)
+    q = q.replace(new RegExp(`\\$${k}\\b`, 'g'), () => escaped)
   }
   return q
 }
