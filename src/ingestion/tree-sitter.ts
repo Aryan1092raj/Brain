@@ -178,3 +178,60 @@ function extractImportSource(node: Parser.SyntaxNode): string | null {
 function emptyDelta(file: string, language: string): SymbolDelta {
   return { file, language, added: [], removed: [], modified: [], importsAdded: [], importsRemoved: [] }
 }
+
+export function getSkeletonCode(source: string, language: string): string {
+  const parser = getParser(language)
+  if (!parser) return source
+
+  const tree = parser.parse(source)
+  const ranges: Array<{ start: number; end: number; replacement: string }> = []
+
+  function walk(node: Parser.SyntaxNode) {
+    const parentType = node.parent?.type
+
+    const isJSFunctionBlock =
+      node.type === 'statement_block' &&
+      (parentType === 'function_declaration' ||
+       parentType === 'function_definition' ||
+       parentType === 'method_definition' ||
+       parentType === 'arrow_function' ||
+       parentType === 'generator_function');
+
+    const isPythonFunctionBlock =
+      node.type === 'block' &&
+      (parentType === 'function_definition' ||
+       parentType === 'class_definition');
+
+    if (isJSFunctionBlock) {
+      ranges.push({
+        start: node.startIndex,
+        end: node.endIndex,
+        replacement: '{ /* implementation omitted */ }'
+      })
+      return
+    } else if (isPythonFunctionBlock && parentType === 'function_definition') {
+      ranges.push({
+        start: node.startIndex,
+        end: node.endIndex,
+        replacement: ':\n    ...'
+      })
+      return
+    }
+
+    for (const child of node.children) {
+      walk(child)
+    }
+  }
+
+  walk(tree.rootNode)
+
+  // Sort ranges in descending order to slice correctly from back to front
+  ranges.sort((a, b) => b.start - a.start)
+
+  let result = source
+  for (const r of ranges) {
+    result = result.slice(0, r.start) + r.replacement + result.slice(r.end)
+  }
+
+  return result
+}

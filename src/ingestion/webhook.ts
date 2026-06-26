@@ -5,12 +5,31 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import { processPushEvent } from './pipeline.js'
+import { getSkeletonCode } from './tree-sitter.js'
 import { buildContext, formatRichContext } from '../query/context-builder.js'
 import { streamQuery, query as queryLlm } from '../query/engine.js'
 import { getGraphOverview } from '../graph/insights.js'
 import type { Config } from '../config/schema.js'
 
 const exec = promisify(execFile)
+
+const SECRET_PATTERNS = [
+  /gsk_[a-zA-Z0-9]{48}/g,
+  /ghp_[a-zA-Z0-9]{36}/g,
+  /github_pat_[a-zA-Z0-9_]{82}/g,
+  /xox[bapr]-[0-9]{12}-[0-9]{12}-[0-9]{12}-[a-zA-Z0-9]{32}/g,
+  /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/g,
+  /AIzaSy[a-zA-Z0-9_-]{33}/g,
+  /sk-[a-zA-Z0-9]{48}/g
+]
+
+function redactSecrets(content: string): string {
+  let redacted = content
+  for (const pattern of SECRET_PATTERNS) {
+    redacted = redacted.replace(pattern, '[REDACTED SECRET]')
+  }
+  return redacted
+}
 
 function escapeHtml(value: unknown): string {
   return String(value)
@@ -58,7 +77,23 @@ async function downloadAndExtractRepo(owner: string, repo: string, brainDir: str
   return path.join(extractDir, rootDir)
 }
 
-async function generateRepoDigest(rootDir: string): Promise<{ tree: string; files: Array<{ path: string; content: string }> }> {
+function fileLanguage(fileName: string): string {
+  const ext = fileName.split('.').pop()?.toLowerCase() ?? ''
+  const mapping: Record<string, string> = {
+    ts: 'typescript', tsx: 'typescript',
+    js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
+    py: 'python'
+  }
+  return mapping[ext] ?? ''
+}
+
+async function generateRepoDigest(
+  rootDir: string,
+  opts?: { maxSize?: number; compress?: boolean }
+): Promise<{ tree: string; files: Array<{ path: string; content: string; size: number }> }> {
+  const maxSize = opts?.maxSize ?? 60000
+  const compress = opts?.compress ?? false
+
   const IGNORE_DIRS = new Set(['node_modules', '.git', '.brain', 'dist', 'target', 'build', '.next', '.cache', '__pycache__', 'venv', '.env'])
   const IGNORE_EXTS = new Set([
     'png', 'jpg', 'jpeg', 'gif', 'ico', 'pdf', 'zip', 'gz', 'tar', 'exe', 'dll', 'so', 'dylib',
@@ -68,7 +103,7 @@ async function generateRepoDigest(rootDir: string): Promise<{ tree: string; file
     'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'Cargo.lock', 'go.sum', 'poetry.lock'
   ])
 
-  const fileList: Array<{ path: string; content: string }> = []
+  const fileList: Array<{ path: string; content: string; size: number }> = []
 
   async function walk(dir: string, currentPrefix: string): Promise<string> {
     let treeStr = ''
@@ -97,11 +132,26 @@ async function generateRepoDigest(rootDir: string): Promise<{ tree: string; file
         const ext = entry.name.split('.').pop()?.toLowerCase() ?? ''
         if (IGNORE_FILES.has(entry.name) || IGNORE_EXTS.has(ext)) continue
 
-        treeStr += `${currentPrefix}${marker}${entry.name}\n`
-
         try {
-          const content = await fs.readFile(fullPath, 'utf-8')
-          fileList.push({ path: relativePath, content })
+          const stat = await fs.stat(fullPath)
+          if (stat.size > maxSize) {
+            treeStr += `${currentPrefix}${marker}${entry.name} (skipped: too large)\n`
+            continue
+          }
+
+          treeStr += `${currentPrefix}${marker}${entry.name}\n`
+
+          let content = await fs.readFile(fullPath, 'utf-8')
+          content = redactSecrets(content)
+
+          if (compress) {
+            const lang = fileLanguage(entry.name)
+            if (lang) {
+              content = getSkeletonCode(content, lang)
+            }
+          }
+
+          fileList.push({ path: relativePath, content, size: stat.size })
         } catch {
           // Skip
         }
@@ -112,6 +162,57 @@ async function generateRepoDigest(rootDir: string): Promise<{ tree: string; file
 
   const tree = await walk(rootDir, '')
   return { tree, files: fileList }
+}
+
+interface TreeNode {
+  name: string
+  type: 'file' | 'directory'
+  path?: string
+  size?: number
+  children?: TreeNode[]
+}
+
+async function buildDirectoryTree(rootDir: string, dir = rootDir): Promise<TreeNode[]> {
+  const IGNORE_DIRS = new Set(['node_modules', '.git', '.brain', 'dist', 'target', 'build', '.next', '.cache', '__pycache__', 'venv', '.env'])
+  const IGNORE_EXTS = new Set([
+    'png', 'jpg', 'jpeg', 'gif', 'ico', 'pdf', 'zip', 'gz', 'tar', 'exe', 'dll', 'so', 'dylib',
+    'woff', 'woff2', 'eot', 'ttf', 'mp4', 'mp3', 'wav', 'db', 'sqlite', 'kuzu', 'svg'
+  ])
+  const IGNORE_FILES = new Set([
+    'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'Cargo.lock', 'go.sum', 'poetry.lock'
+  ])
+
+  const result: TreeNode[] = []
+  const entries = await fs.readdir(dir, { withFileTypes: true })
+
+  entries.sort((a, b) => {
+    if (a.isDirectory() && !b.isDirectory()) return -1
+    if (!a.isDirectory() && b.isDirectory()) return 1
+    return a.name.localeCompare(b.name)
+  })
+
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name)
+    const relativePath = path.relative(rootDir, fullPath)
+
+    if (entry.isDirectory()) {
+      if (IGNORE_DIRS.has(entry.name)) continue
+      const children = await buildDirectoryTree(rootDir, fullPath)
+      if (children.length > 0) {
+        result.push({ name: entry.name, type: 'directory', children })
+      }
+    } else {
+      const ext = entry.name.split('.').pop()?.toLowerCase() ?? ''
+      if (IGNORE_FILES.has(entry.name) || IGNORE_EXTS.has(ext)) continue
+      try {
+        const stat = await fs.stat(fullPath)
+        result.push({ name: entry.name, type: 'file', path: relativePath, size: stat.size })
+      } catch {
+        // Skip
+      }
+    }
+  }
+  return result
 }
 
 export function verifyHmac(signature: string, body: Buffer, secret: string): boolean {
@@ -291,6 +392,11 @@ Keep answers concise but informative.`
         return res.status(400).send('Owner and repo parameters are required')
       }
 
+      // Query params
+      const format = (req.query.format as string) === 'xml' ? 'xml' : 'text'
+      const maxSize = req.query.maxSize ? Number(req.query.maxSize) : 60000
+      const compress = req.query.compress === 'true'
+
       // Check if it is a local repo
       const matchedRepo = config.repos.find(r => {
         const parts = r.remote.replace('https://github.com/', '').split('/')
@@ -307,27 +413,17 @@ Keep answers concise but informative.`
         rootPath = await downloadAndExtractRepo(owner, repo, brainDir)
       }
 
-      const { tree, files } = await generateRepoDigest(rootPath)
+      const { tree, files } = await generateRepoDigest(rootPath, { maxSize, compress })
+      const nestedTree = await buildDirectoryTree(rootPath)
 
       // Calculate characteristics
       const fileCount = files.length
       const charCount = files.reduce((acc, f) => acc + f.content.length, 0)
       const estimatedTokens = Math.round(charCount / 4)
 
-      // Build LLM-friendly prompt digest
-      let digestText = `================================================================\n`
-      digestText += `Directory Structure\n`
-      digestText += `================================================================\n`
-      digestText += tree + `\n`
-      digestText += `================================================================\n`
-      digestText += `File Contents\n`
-      digestText += `================================================================\n`
-      for (const file of files) {
-        digestText += `=========================================\n`
-        digestText += `File: ${file.path}\n`
-        digestText += `=========================================\n`
-        digestText += file.content + `\n\n`
-      }
+      // Escape JSON to prevent breaking script tag (XSS or syntax issues)
+      const filesJson = JSON.stringify(files).replace(/</g, '\\u003c').replace(/>/g, '\\u003e')
+      const treeJson = JSON.stringify(nestedTree).replace(/</g, '\\u003c').replace(/>/g, '\\u003e')
 
       // Clean up remote repo tmp dir
       if (!isLocal) {
@@ -348,6 +444,7 @@ Keep answers concise but informative.`
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Brain Ingest - ${escapeHtml(owner)}/${escapeHtml(repo)}</title>
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; }
   :root {
     --paper: #fffdf8;
@@ -361,27 +458,58 @@ Keep answers concise but informative.`
     --peach: #ffc174;
     --shadow: #152033;
   }
-  body { min-height: 100dvh; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--paper); color: var(--ink); }
-  .topbar { height: 72px; border-bottom: 3px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 0 clamp(18px, 5vw, 72px); }
-  .brand { font-size: 28px; font-weight: 900; }
+  body { min-height: 100dvh; font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif; background: var(--paper); color: var(--ink); }
+  .topbar { height: 72px; border-bottom: 3px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 0 clamp(18px, 5vw, 72px); background: #fffaf0; }
+  .brand { font-size: 28px; font-weight: 900; letter-spacing: -0.5px; }
   .brand span { color: var(--pink); }
   .meta { display: flex; align-items: center; gap: 12px; color: var(--line); font-size: 15px; }
   .badge { display: inline-flex; align-items: center; height: 25px; padding: 0 8px; border: 2px solid var(--line); background: var(--pink); color: #fff; font-weight: 900; font-size: 12px; transform: rotate(-6deg); box-shadow: 2px 2px 0 var(--line); }
-  main { width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 40px 0 60px; }
+  
+  main { width: min(1200px, calc(100% - 32px)); margin: 0 auto; padding: 40px 0 60px; }
   .header { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 30px; }
-  h1 { font-size: clamp(28px, 5vw, 42px); font-weight: 950; }
+  h1 { font-size: clamp(28px, 5vw, 42px); font-weight: 950; letter-spacing: -0.5px; }
+  
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 30px; }
   .card { border: 3px solid var(--line); border-radius: 6px; background: #fffaf0; padding: 20px; transition: all 0.2s ease; box-shadow: 4px 4px 0 var(--shadow); }
   .card:hover { transform: translate(-3px, -3px); box-shadow: 8px 8px 0 var(--shadow); }
-  .card .value { font-size: 32px; font-weight: 950; color: var(--pink); }
+  .card .value { font-size: 32px; font-weight: 950; color: var(--pink); font-variant-numeric: tabular-nums; }
   .card .label { margin-top: 8px; color: var(--muted); font-size: 13px; font-weight: 850; text-transform: uppercase; }
+  
+  .layout-grid { display: grid; grid-template-columns: 340px 1fr; gap: 24px; align-items: start; }
+  .sidebar-panel { background: var(--panel); border: 4px solid var(--line); border-radius: 8px; box-shadow: 6px 6px 0 var(--shadow); padding: 20px; }
+  .sidebar-panel h2 { font-size: 18px; font-weight: 900; margin-bottom: 12px; border-bottom: 2px solid var(--line); padding-bottom: 6px; }
+  
+  .settings-group { display: grid; gap: 12px; margin-bottom: 20px; }
+  .setting-item { display: grid; gap: 6px; }
+  .setting-item label { font-size: 12px; font-weight: 850; text-transform: uppercase; color: var(--muted); }
+  select, input[type="text"] { width: 100%; height: 38px; border: 3px solid var(--line); border-radius: 4px; background: #fff; padding: 0 10px; font-size: 13px; font-weight: 700; outline: none; }
+  .checkbox-item { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; font-weight: 800; user-select: none; }
+  .checkbox-item input { width: 18px; height: 18px; cursor: pointer; }
+  
+  .tree-container { background: #fffaf0; border: 3px solid var(--line); border-radius: 6px; padding: 12px; max-height: 450px; overflow-y: auto; }
+  .tree-list { list-style: none; margin-left: 0; }
+  .tree-node { margin-left: 14px; list-style: none; font-size: 13px; font-weight: 700; line-height: 1.4; }
+  .tree-node.directory { margin-bottom: 4px; }
+  .tree-node.file { margin-bottom: 2px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+  .tree-node label { display: inline-flex; align-items: center; cursor: pointer; user-select: none; }
+  .tree-node input { margin-right: 6px; cursor: pointer; width: 14px; height: 14px; }
+  summary { font-weight: 800; cursor: pointer; list-style: none; display: flex; align-items: center; gap: 4px; outline: none; }
+  summary::-webkit-details-marker { display: none; }
+  
   .container { background: var(--panel); border: 4px solid var(--line); border-radius: 8px; box-shadow: 10px 10px 0 var(--shadow); padding: clamp(18px, 4vw, 30px); }
-  .actions { display: flex; gap: 16px; margin-bottom: 20px; }
+  .actions { display: flex; gap: 16px; margin-bottom: 20px; align-items: center; }
+  
   button, .btn { display: inline-flex; align-items: center; justify-content: center; height: 50px; padding: 0 24px; border: 4px solid var(--line); border-radius: 6px; font-size: 16px; font-weight: 850; cursor: pointer; text-decoration: none; color: var(--ink); background: var(--peach); box-shadow: 4px 4px 0 var(--shadow); transition: all 0.15s ease; }
   button:hover, .btn:hover { transform: translate(-2px, -2px); box-shadow: 6px 6px 0 var(--shadow); }
   button:active, .btn:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--shadow); }
   .btn.secondary { background: var(--field); }
-  textarea { width: 100%; height: 550px; border: 4px solid var(--line); border-radius: 6px; background: var(--field); padding: 20px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; font-weight: 700; line-height: 1.5; box-shadow: 4px 4px 0 var(--shadow); resize: none; }
+  
+  textarea { width: 100%; height: 600px; border: 4px solid var(--line); border-radius: 6px; background: var(--field); padding: 20px; font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; line-height: 1.5; box-shadow: 4px 4px 0 var(--shadow); resize: none; outline: none; }
+  
+  @media (max-width: 850px) {
+    .layout-grid { grid-template-columns: 1fr; }
+    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
 </style>
 </head>
 <body>
@@ -396,20 +524,182 @@ Keep answers concise but informative.`
   </div>
 
   <div class="stats">
-    <div class="card"><div class="value">${fileCount}</div><div class="label">Files Included</div></div>
-    <div class="card"><div class="value">${charCount.toLocaleString()}</div><div class="label">Total Characters</div></div>
-    <div class="card"><div class="value">${estimatedTokens.toLocaleString()}</div><div class="label">Est. GPT Tokens</div></div>
+    <div class="card"><div class="value" id="files-count-val">${fileCount}</div><div class="label">Files Included</div></div>
+    <div class="card"><div class="value" id="chars-count-val">${charCount.toLocaleString()}</div><div class="label">Total Characters</div></div>
+    <div class="card"><div class="value" id="tokens-count-val">${estimatedTokens.toLocaleString()}</div><div class="label">Est. GPT Tokens</div></div>
     <div class="card"><div class="value" style="color: var(--mint);">${isLocal ? 'Local' : 'Remote'}</div><div class="label">Repo Location</div></div>
   </div>
 
-  <div class="container">
-    <div class="actions">
-      <button onclick="copyDigest()">Copy LLM Prompt Digest</button>
+  <div class="layout-grid">
+    <aside class="sidebar-panel">
+      <h2>Options</h2>
+      <div class="settings-group">
+        <div class="setting-item">
+          <label for="format-select">Format</label>
+          <select id="format-select" onchange="toggleFile()">
+            <option value="text" ${format === 'text' ? 'selected' : ''}>Plain Text (GitIngest)</option>
+            <option value="xml" ${format === 'xml' ? 'selected' : ''}>XML Tags (Claude-friendly)</option>
+          </select>
+        </div>
+        
+        <div class="setting-item">
+          <label for="size-limit-select">Max File Size</label>
+          <select id="size-limit-select" onchange="reloadSettings()">
+            <option value="20000" ${maxSize === 20000 ? 'selected' : ''}>20 KB</option>
+            <option value="60000" ${maxSize === 60000 ? 'selected' : ''}>60 KB (Default)</option>
+            <option value="150000" ${maxSize === 150000 ? 'selected' : ''}>150 KB</option>
+            <option value="500000" ${maxSize === 500000 ? 'selected' : ''}>500 KB</option>
+          </select>
+        </div>
+        
+        <div style="margin-top: 8px;">
+          <label class="checkbox-item">
+            <input type="checkbox" id="compress-toggle" ${compress ? 'checked' : ''} onchange="reloadSettings()">
+            <span>Skeleton Mode (Compress)</span>
+          </label>
+        </div>
+      </div>
+      
+      <h2>File Tree</h2>
+      <div class="tree-container" id="tree-root"></div>
+    </aside>
+
+    <div class="container">
+      <div class="actions">
+        <button onclick="copyDigest()">Copy LLM Prompt Digest</button>
+        <span style="font-size: 13px; font-weight: 800; color: var(--muted); margin-left: auto;">
+          Selected: <span id="selected-files-val" style="color: var(--pink);">${fileCount}</span> files · 
+          <span id="selected-tokens-val" style="color: var(--mint);">${estimatedTokens.toLocaleString()}</span> tokens
+        </span>
+      </div>
+      <textarea id="digest-text" readonly></textarea>
     </div>
-    <textarea id="digest-text" readonly>${escapeHtml(digestText)}</textarea>
   </div>
 </main>
+
 <script>
+// Load injected repository data
+const allFiles = ${filesJson};
+const treeData = ${treeJson};
+const treeStr = ${JSON.stringify(tree)};
+const owner = ${JSON.stringify(owner)};
+const repo = ${JSON.stringify(repo)};
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  return (bytes / 1024).toFixed(1) + ' KB';
+}
+
+function renderTree(container, nodes) {
+  function buildHtml(items) {
+    let html = '<ul class="tree-list">';
+    for (const item of items) {
+      if (item.type === 'directory') {
+        html += '<li class="tree-node directory">';
+        html += '<details open>';
+        html += '<summary>';
+        html += '<input type="checkbox" checked class="dir-checkbox" onchange="toggleDir(this)">';
+        html += '📂 ' + item.name;
+        html += '</summary>';
+        html += buildHtml(item.children);
+        html += '</details>';
+        html += '</li>';
+      } else {
+        html += '<li class="tree-node file">';
+        html += '<label>';
+        html += '<input type="checkbox" checked data-path="' + item.path + '" onchange="toggleFile()">';
+        html += '📄 ' + item.name;
+        html += '<span style="color: var(--muted); font-size: 10px; font-weight: 700; margin-left: 4px;">(' + formatSize(item.size) + ')</span>';
+        html += '</label>';
+        html += '</li>';
+      }
+    }
+    html += '</ul>';
+    return html;
+  }
+  container.innerHTML = buildHtml(nodes);
+}
+
+function toggleDir(dirCheckbox) {
+  const parentLi = dirCheckbox.closest('li.directory');
+  const childCheckboxes = parentLi.querySelectorAll('input[type="checkbox"]');
+  for (const cb of childCheckboxes) {
+    cb.checked = dirCheckbox.checked;
+  }
+  toggleFile();
+}
+
+function toggleFile() {
+  const checkedPaths = new Set();
+  const cbs = document.querySelectorAll('input[data-path]');
+  let selectedFiles = 0;
+  let selectedChars = 0;
+  
+  for (const cb of cbs) {
+    if (cb.checked) {
+      checkedPaths.add(cb.dataset.path);
+      selectedFiles++;
+    }
+  }
+
+  const format = document.getElementById('format-select').value;
+  let text = '';
+
+  if (format === 'xml') {
+    text += '<repository path="' + owner + '/' + repo + '">\\n';
+    text += '<directory_structure>\\n' + treeStr + '</directory_structure>\\n\\n';
+    text += '<file_contents>\\n';
+    for (const file of allFiles) {
+      if (checkedPaths.has(file.path)) {
+        text += '<file path="' + file.path + '">\\n' + file.content + '\\n</file>\\n\\n';
+        selectedChars += file.content.length;
+      }
+    }
+    text += '</file_contents>\\n';
+    text += '</repository>\\n';
+  } else {
+    text += '================================================================\\n';
+    text += 'Directory Structure\\n';
+    text += '================================================================\\n';
+    text += treeStr + '\\n';
+    text += '================================================================\\n';
+    text += 'File Contents\\n';
+    text += '================================================================\\n';
+    for (const file of allFiles) {
+      if (checkedPaths.has(file.path)) {
+        text += '=========================================\\n';
+        text += 'File: ' + file.path + '\\n';
+        text += '=========================================\\n';
+        text += file.content + '\\n\\n';
+        selectedChars += file.content.length;
+      }
+    }
+  }
+
+  document.getElementById('digest-text').value = text;
+  
+  // Update stats counters
+  const tokens = Math.round(selectedChars / 4);
+  document.getElementById('selected-files-val').textContent = selectedFiles;
+  document.getElementById('selected-tokens-val').textContent = tokens.toLocaleString();
+  
+  document.getElementById('files-count-val').textContent = selectedFiles;
+  document.getElementById('chars-count-val').textContent = selectedChars.toLocaleString();
+  document.getElementById('tokens-count-val').textContent = tokens.toLocaleString();
+}
+
+function reloadSettings() {
+  const compress = document.getElementById('compress-toggle').checked;
+  const maxSize = document.getElementById('size-limit-select').value;
+  const format = document.getElementById('format-select').value;
+
+  const url = new URL(window.location.href);
+  url.searchParams.set('compress', compress ? 'true' : 'false');
+  url.searchParams.set('maxSize', maxSize);
+  url.searchParams.set('format', format);
+  window.location.href = url.toString();
+}
+
 function copyDigest() {
   const ta = document.getElementById('digest-text');
   navigator.clipboard.writeText(ta.value);
@@ -422,6 +712,10 @@ function copyDigest() {
     btn.style.background = '';
   }, 2000);
 }
+
+// Initialise tree and content
+renderTree(document.getElementById('tree-root'), treeData);
+toggleFile();
 </script>
 </body>
 </html>`)
