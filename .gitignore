@@ -1,4 +1,5 @@
 .brain/
+brain.db
 node_modules/
 dist/
 .env

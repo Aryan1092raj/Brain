@@ -1,4 +1,5 @@
 import { getDb } from '../memory/db.js'
+import { getGraphOverview, type GraphOverview } from '../graph/insights.js'
 
 interface ContextData {
   repo: string
@@ -99,6 +100,84 @@ export function formatContext(ctx: ContextData): string {
   return parts.join('\n')
 }
 
+export async function formatRichContext(ctx: ContextData): Promise<string> {
+  const parts = [formatContext(ctx)]
+
+  try {
+    const overview = await loadGraphOverview(ctx.repo)
+    const symbols = overview.nodes.filter(n => n.type === 'symbol')
+    const files = overview.nodes.filter(n => n.type === 'file')
+    const calls = overview.edges.filter(e => e.type === 'calls')
+    const contains = overview.edges.filter(e => e.type === 'contains')
+
+    parts.push('## Live Kuzu Graph')
+    parts.push(`- Files in graph sample: ${files.length}`)
+    parts.push(`- Symbols in graph sample: ${symbols.length}`)
+    parts.push(`- Contains edges: ${contains.length}`)
+    parts.push(`- Calls edges: ${calls.length}`)
+    parts.push(`- Dead-code candidates: ${overview.deadCode.length}`)
+    parts.push('')
+
+    const modules = new Map<string, number>()
+    for (const node of symbols) {
+      const dir = node.file?.split('/').slice(0, 2).join('/') ?? 'unknown'
+      modules.set(dir, (modules.get(dir) ?? 0) + 1)
+    }
+
+    if (modules.size > 0) {
+      parts.push('## Module Map')
+      for (const [module, count] of [...modules.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)) {
+        parts.push(`- ${module}: ${count} symbols`)
+      }
+      parts.push('')
+    }
+
+    if (calls.length > 0) {
+      const labels = new Map(overview.nodes.map(n => [n.id, `${n.label}${n.file ? ` (${n.file})` : ''}`]))
+      parts.push('## Call Edges')
+      for (const edge of calls.slice(0, 25)) {
+        parts.push(`- ${labels.get(edge.source) ?? edge.source} -> ${labels.get(edge.target) ?? edge.target}`)
+      }
+      parts.push('')
+    }
+
+    if (overview.deadCode.length > 0) {
+      parts.push('## Dead-Code Candidates')
+      for (const item of overview.deadCode.slice(0, 12)) {
+        parts.push(`- ${item.name} (${item.kind}) in ${item.file}:${item.lineStart}: ${item.reason}`)
+      }
+      parts.push('')
+    }
+  } catch (err) {
+    parts.push('## Live Kuzu Graph')
+    parts.push(`- unavailable: ${err instanceof Error ? err.message : 'unknown error'}`)
+    parts.push('')
+  }
+
+  return parts.join('\n')
+}
+
+async function loadGraphOverview(repo: string): Promise<GraphOverview> {
+  try {
+    return await getGraphOverview(repo, 120)
+  } catch (directErr) {
+    const port = process.env.BRAIN_PORT ?? '3747'
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 1000)
+    try {
+      const res = await fetch(`http://localhost:${port}/graph?repo=${encodeURIComponent(repo)}`, {
+        signal: controller.signal,
+      })
+      if (!res.ok) throw new Error(`daemon returned ${res.status}`)
+      return await res.json() as GraphOverview
+    } catch {
+      throw directErr
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+}
+
 export function buildSystemPrompt(): string {
   return `You are a codebase analyst with access to a live knowledge graph.
 You know:
@@ -106,8 +185,10 @@ You know:
 - Hot zones (symbols/files with high change velocity)
 - Extracted facts (relationships between code entities)
 - Recent changes (symbols modified recently)
+- Live Kuzu graph samples: files, symbols, Contains edges, Calls edges, and dead-code candidates
 
 Use this context to answer user questions about the codebase.
+When context is sparse, say what is known from graph structure and what needs more commits or summaries.
 Be specific, reference file paths and symbols, and ground your answer in the data provided.
 Keep answers concise but informative.`
 }

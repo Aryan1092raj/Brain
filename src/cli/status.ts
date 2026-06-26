@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { loadConfig } from '../config/loader.js'
 import { initSqlite, getDb } from '../memory/db.js'
 import { initMemorySchema } from '../memory/schema.js'
 import { getCurrentHotZones } from '../temporal/hotzone.js'
@@ -8,7 +9,8 @@ export async function status(cwd: string, _argv: string[]): Promise<void> {
   initSqlite(brainDir)
   initMemorySchema(getDb())
 
-  const repo = path.basename(cwd)
+  const config = await loadConfig(cwd)
+  const repo = process.env.BRAIN_REPO ?? config.repos[0]?.name ?? path.basename(cwd)
   const db = getDb()
 
   const symbolCount = (db.prepare(`SELECT COUNT(DISTINCT symbol_fqn) as c FROM change_events WHERE repo = ?`).get(repo) as { c: number })?.c ?? 0

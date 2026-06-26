@@ -108,7 +108,11 @@ If you get a Node.js version mismatch error with better-sqlite3:
 npm rebuild better-sqlite3
 ```
 
-### 6. Start the daemon
+### 6. Index and start the daemon
+```bash
+node dist/cli/index.js scan
+```
+
 ```bash
 node dist/cli/index.js watch
 ```
@@ -180,14 +184,18 @@ This creates:
 - `.brain/` directory with Kuzu graph and SQLite databases
 - `brain.config.json` with default settings
 
-### 4. Start the Daemon
+### 4. Index and Start the Daemon
+
+```bash
+node dist/cli/index.js scan
+```
 
 ```bash
 node dist/cli/index.js watch
 ```
 
 The daemon will:
-- Watch your repo for file changes and update the knowledge graph
+- Receive GitHub webhook events and update the knowledge graph
 - Run decay scheduler every 6 hours
 - Compress tier 1 → tier 2 every 24 hours
 - Promote to tier 3/4 every 7 days
@@ -200,6 +208,7 @@ The daemon will:
 | Command | Description |
 |---------|-------------|
 | `node dist/cli/index.js init` | Initialize Brain in the current directory |
+| `node dist/cli/index.js scan` | Index the configured repository once |
 | `node dist/cli/index.js watch` | Start the daemon (ingestion, decay, API server) |
 | `node dist/cli/index.js query "<question>"` | Natural language query against the knowledge graph |
 | `node dist/cli/index.js ask "<question>"` | LLM-powered question answering |

@@ -45,8 +45,7 @@ if (cmd === 'init') {
   })
 } else if (cmd === 'query') {
   const question = process.argv.slice(3).join(' ')
-  const repo = process.env.BRAIN_REPO || 'default'
-  queryCommand(question, repo).catch(err => {
+  queryCommand(cwd, question, process.env.BRAIN_REPO).catch(err => {
     console.error('[brain] query failed:', err)
     process.exit(1)
   })

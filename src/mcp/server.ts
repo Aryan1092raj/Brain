@@ -1,5 +1,5 @@
 import { streamQuery } from '../query/engine.js'
-import { buildContext, formatContext, buildSystemPrompt } from '../query/context-builder.js'
+import { buildContext, formatRichContext, buildSystemPrompt } from '../query/context-builder.js'
 import { getCurrentHotZones } from '../temporal/hotzone.js'
 import { getDb } from '../memory/db.js'
 
@@ -53,7 +53,7 @@ export async function handleToolCall(toolName: string, args: Record<string, unkn
     case 'brain_ask': {
       const prompt = args.prompt as string
       const ctx = buildContext(repo)
-      const contextStr = formatContext(ctx)
+      const contextStr = await formatRichContext(ctx)
       const systemPrompt = buildSystemPrompt()
       const userPrompt = `${contextStr}\n\n## User Question\n${prompt}\n\nProvide a grounded answer.`
 

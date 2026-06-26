@@ -9,6 +9,7 @@ import { extractSymbolDelta } from '../ingestion/tree-sitter.js'
 import { applySymbolDelta } from '../graph/writer.js'
 import { detectModules } from '../ingestion/module-detector.js'
 import { writeTier1Events, type RawEvent } from '../memory/tier1.js'
+import { writeChangeEvents } from '../temporal/tracker.js'
 import type { FileChange } from '../ingestion/diff-parser.js'
 
 const IGNORE_DIRS = new Set(['node_modules', '.git', '.brain', 'dist', 'target', 'build', '.next', '.cache', '__pycache__', 'venv', '.env'])
@@ -121,6 +122,8 @@ export async function scan(cwd: string, _argv: string[]): Promise<void> {
     }
   }
   if (events.length > 0) writeTier1Events(events)
+  writeChangeEvents(repo.name, scanSha, 'brain-scan', deltas,
+    deltas.map(d => ({ path: d.file, additions: d.added.length, deletions: d.removed.length })))
 
   detectModules(repo.name)
 

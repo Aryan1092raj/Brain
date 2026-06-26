@@ -1,10 +1,12 @@
 import { basename } from 'node:path'
 import path from 'node:path'
 import * as readline from 'node:readline'
-import { buildContext, formatContext, buildSystemPrompt } from '../query/context-builder.js'
+import { buildContext, formatRichContext, buildSystemPrompt } from '../query/context-builder.js'
 import { streamQuery } from '../query/engine.js'
 import { initSqlite, getDb } from '../memory/db.js'
 import { initMemorySchema } from '../memory/schema.js'
+import { loadConfig } from '../config/loader.js'
+import { initKuzu } from '../graph/client.js'
 
 function ensureDb(brainDir: string) {
   initSqlite(brainDir)
@@ -43,7 +45,7 @@ function parseArgs(argv: string[]): { query: string; options: { repo?: string; j
 
 async function runQuery(repo: string, question: string, systemPrompt: string): Promise<string> {
   const ctx = buildContext(repo)
-  const contextStr = formatContext(ctx)
+  const contextStr = await formatRichContext(ctx)
   const userPrompt = `${contextStr}\n\n## User Question\n${question}\n\nProvide a grounded answer based on the above context.`
   let fullResponse = ''
   for await (const chunk of streamQuery(systemPrompt, userPrompt)) {
@@ -56,9 +58,11 @@ async function runQuery(repo: string, question: string, systemPrompt: string): P
 
 export async function ask(cwd: string, argv: string[]): Promise<void> {
   const { query: queryText, options } = parseArgs(argv)
-  const repo = options.repo ?? basename(cwd)
+  const config = await loadConfig(cwd)
+  const repo = options.repo ?? process.env.BRAIN_REPO ?? config.repos[0]?.name ?? basename(cwd)
   const brainDir = path.join(cwd, '.brain')
   ensureDb(brainDir)
+  initKuzu(brainDir)
 
   const systemPrompt = buildSystemPrompt()
 
@@ -85,7 +89,7 @@ export async function ask(cwd: string, argv: string[]): Promise<void> {
 
   if (options.json) {
     const ctx = buildContext(repo)
-    const contextStr = formatContext(ctx)
+    const contextStr = await formatRichContext(ctx)
     const userPrompt = `${contextStr}\n\n## User Question\n${queryText}\n\nProvide a grounded answer based on the above context.`
     let chunks: string[] = []
     for await (const chunk of streamQuery(systemPrompt, userPrompt)) {
