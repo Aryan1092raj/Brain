@@ -24,6 +24,23 @@ const SECRET_PATTERNS = [
   /sk-[a-zA-Z0-9]{48}/g
 ]
 
+export const DEFAULT_IGNORE_DIRS = new Set([
+  'node_modules', '.git', '.brain', 'dist', 'target', 'build', '.next', '.cache', '__pycache__', 'venv', '.env'
+])
+
+export const DEFAULT_IGNORE_EXTS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'ico', 'pdf', 'zip', 'gz', 'tar', 'exe', 'dll', 'so', 'dylib',
+  'woff', 'woff2', 'eot', 'ttf', 'mp4', 'mp3', 'wav', 'db', 'sqlite', 'kuzu', 'svg',
+  'pem', 'key', 'pfx', 'crt', 'der', 'cer'
+])
+
+export const DEFAULT_IGNORE_FILES = new Set([
+  'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'Cargo.lock', 'go.sum', 'poetry.lock',
+  '.env', '.env.local', '.env.development', '.env.test', '.env.production',
+  '.env.development.local', '.env.test.local', '.env.production.local',
+  '.npmrc', 'secrets.json', 'secrets.yaml', 'secrets.yml'
+])
+
 function redactSecrets(content: string): string {
   let redacted = content
   for (const pattern of SECRET_PATTERNS) {
@@ -121,14 +138,9 @@ async function generateRepoDigest(
   const compress = opts?.compress ?? false
   const ignorePatterns = opts?.ignorePatterns ?? []
 
-  const IGNORE_DIRS = new Set(['node_modules', '.git', '.brain', 'dist', 'target', 'build', '.next', '.cache', '__pycache__', 'venv', '.env'])
-  const IGNORE_EXTS = new Set([
-    'png', 'jpg', 'jpeg', 'gif', 'ico', 'pdf', 'zip', 'gz', 'tar', 'exe', 'dll', 'so', 'dylib',
-    'woff', 'woff2', 'eot', 'ttf', 'mp4', 'mp3', 'wav', 'db', 'sqlite', 'kuzu', 'svg'
-  ])
-  const IGNORE_FILES = new Set([
-    'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'Cargo.lock', 'go.sum', 'poetry.lock'
-  ])
+  const IGNORE_DIRS = DEFAULT_IGNORE_DIRS
+  const IGNORE_EXTS = DEFAULT_IGNORE_EXTS
+  const IGNORE_FILES = DEFAULT_IGNORE_FILES
 
   const fileList: Array<{ path: string; content: string; size: number }> = []
 
@@ -204,14 +216,9 @@ interface TreeNode {
 }
 
 async function buildDirectoryTree(rootDir: string, dir = rootDir, ignorePatterns: string[] = []): Promise<TreeNode[]> {
-  const IGNORE_DIRS = new Set(['node_modules', '.git', '.brain', 'dist', 'target', 'build', '.next', '.cache', '__pycache__', 'venv', '.env'])
-  const IGNORE_EXTS = new Set([
-    'png', 'jpg', 'jpeg', 'gif', 'ico', 'pdf', 'zip', 'gz', 'tar', 'exe', 'dll', 'so', 'dylib',
-    'woff', 'woff2', 'eot', 'ttf', 'mp4', 'mp3', 'wav', 'db', 'sqlite', 'kuzu', 'svg'
-  ])
-  const IGNORE_FILES = new Set([
-    'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'Cargo.lock', 'go.sum', 'poetry.lock'
-  ])
+  const IGNORE_DIRS = DEFAULT_IGNORE_DIRS
+  const IGNORE_EXTS = DEFAULT_IGNORE_EXTS
+  const IGNORE_FILES = DEFAULT_IGNORE_FILES
 
   const result: TreeNode[] = []
   const entries = await fs.readdir(dir, { withFileTypes: true })
