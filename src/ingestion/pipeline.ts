@@ -38,7 +38,7 @@ export async function processPushEvent(repo: RepoConfig, payload: Record<string,
 
   console.info(`[brain] processing commit ${commitSha.slice(0, 7)} for ${repo.name}`)
 
-  const changes = await parseDiff(repo, payload)
+  const changes = await parseDiff(repo, payload, commitSha)
   console.info(`[brain] ${changes.length} source files changed`)
 
   const deltas = await Promise.all(

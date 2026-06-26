@@ -16,10 +16,8 @@ export function verifyHmac(signature: string, body: Buffer, secret: string): boo
 
 export function createWebhookServer(config: Config, trackInFlight?: (delta: number) => void) {
   const app = express()
-  app.use(express.raw({ type: 'application/json' }))
-  app.use(express.json())
 
-  app.post('/webhook/:repoName', async (req, res) => {
+  app.post('/webhook/:repoName', express.raw({ type: 'application/json' }), async (req, res) => {
     const repoName = req.params.repoName
     const repo = config.repos.find(r => r.name === repoName)
 
@@ -92,7 +90,7 @@ Keep answers concise but informative.`
     }
   })
 
-  app.get('/status', express.json(), async (req, res) => {
+  app.get('/status', async (req, res) => {
     try {
       const repo = req.query.repo as string
       if (!repo) {

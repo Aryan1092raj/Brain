@@ -14,18 +14,20 @@ export interface FileChange {
 export async function parseDiff(
   repo: RepoConfig,
   payload: Record<string, unknown>,
+  commitSha?: string,
 ): Promise<FileChange[]> {
   const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN })
   const match = repo.remote.replace('https://github.com/', '').split('/')
   const owner = match[0]
   const repoName = match[1]
 
-  const commitSha = (payload.head_commit as { id: string }).id
+  const sha = commitSha ?? (payload.head_commit as { id?: string })?.id
+  if (!sha) throw new Error('No commit SHA available')
 
   const { data: commit } = await octokit.repos.getCommit({
     owner,
     repo: repoName,
-    ref: commitSha,
+    ref: sha,
   })
 
   const changes: FileChange[] = (commit.files ?? []).map(f => ({

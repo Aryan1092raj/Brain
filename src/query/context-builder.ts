@@ -90,7 +90,7 @@ export function formatContext(ctx: ContextData): string {
   if (ctx.recentChanges.length > 0) {
     parts.push('## Recent Changes')
     for (const c of ctx.recentChanges.slice(0, 10)) {
-      const date = new Date(c.ts * 1000).toISOString().slice(0, 10)
+      const date = new Date(c.ts).toISOString().slice(0, 10)
       parts.push(`- ${date} ${c.fqn} in ${c.file}`)
     }
     parts.push('')
