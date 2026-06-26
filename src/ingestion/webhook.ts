@@ -1,10 +1,16 @@
 import express from 'express'
 import crypto from 'node:crypto'
+import fs from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import path from 'node:path'
 import { processPushEvent } from './pipeline.js'
 import { buildContext, formatRichContext } from '../query/context-builder.js'
 import { streamQuery, query as queryLlm } from '../query/engine.js'
 import { getGraphOverview } from '../graph/insights.js'
 import type { Config } from '../config/schema.js'
+
+const exec = promisify(execFile)
 
 function escapeHtml(value: unknown): string {
   return String(value)
@@ -13,6 +19,99 @@ function escapeHtml(value: unknown): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;')
+}
+
+async function downloadAndExtractRepo(owner: string, repo: string, brainDir: string): Promise<string> {
+  const tmpDir = path.join(brainDir, 'tmp')
+  await fs.mkdir(tmpDir, { recursive: true })
+
+  const zipPath = path.join(tmpDir, `${owner}-${repo}.zip`)
+  const extractDir = path.join(tmpDir, `${owner}-${repo}-extracted`)
+
+  await fs.rm(extractDir, { recursive: true, force: true })
+  await fs.rm(zipPath, { force: true })
+
+  let downloadUrl = `https://github.com/${owner}/${repo}/archive/refs/heads/main.zip`
+  let response = await fetch(downloadUrl)
+  if (!response.ok) {
+    downloadUrl = `https://github.com/${owner}/${repo}/archive/refs/heads/master.zip`
+    response = await fetch(downloadUrl)
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to download repository ${owner}/${repo}: ${response.statusText}`)
+  }
+
+  const arrayBuffer = await response.arrayBuffer()
+  await fs.writeFile(zipPath, Buffer.from(arrayBuffer))
+
+  await fs.mkdir(extractDir, { recursive: true })
+  await exec('unzip', ['-q', zipPath, '-d', extractDir])
+  await fs.rm(zipPath, { force: true })
+
+  const dirs = await fs.readdir(extractDir)
+  const rootDir = dirs.find(d => !d.startsWith('.'))
+  if (!rootDir) {
+    throw new Error('No root folder found in extracted zip')
+  }
+
+  return path.join(extractDir, rootDir)
+}
+
+async function generateRepoDigest(rootDir: string): Promise<{ tree: string; files: Array<{ path: string; content: string }> }> {
+  const IGNORE_DIRS = new Set(['node_modules', '.git', '.brain', 'dist', 'target', 'build', '.next', '.cache', '__pycache__', 'venv', '.env'])
+  const IGNORE_EXTS = new Set([
+    'png', 'jpg', 'jpeg', 'gif', 'ico', 'pdf', 'zip', 'gz', 'tar', 'exe', 'dll', 'so', 'dylib',
+    'woff', 'woff2', 'eot', 'ttf', 'mp4', 'mp3', 'wav', 'db', 'sqlite', 'kuzu', 'svg'
+  ])
+  const IGNORE_FILES = new Set([
+    'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'Cargo.lock', 'go.sum', 'poetry.lock'
+  ])
+
+  const fileList: Array<{ path: string; content: string }> = []
+
+  async function walk(dir: string, currentPrefix: string): Promise<string> {
+    let treeStr = ''
+    const entries = await fs.readdir(dir, { withFileTypes: true })
+
+    entries.sort((a, b) => {
+      if (a.isDirectory() && !b.isDirectory()) return -1
+      if (!a.isDirectory() && b.isDirectory()) return 1
+      return a.name.localeCompare(b.name)
+    })
+
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i]
+      const isLast = i === entries.length - 1
+      const marker = isLast ? '└── ' : '├── '
+      const childPrefix = isLast ? '    ' : '│   '
+
+      const fullPath = path.join(dir, entry.name)
+      const relativePath = path.relative(rootDir, fullPath)
+
+      if (entry.isDirectory()) {
+        if (IGNORE_DIRS.has(entry.name)) continue
+        treeStr += `${currentPrefix}${marker}${entry.name}/\n`
+        treeStr += await walk(fullPath, `${currentPrefix}${childPrefix}`)
+      } else {
+        const ext = entry.name.split('.').pop()?.toLowerCase() ?? ''
+        if (IGNORE_FILES.has(entry.name) || IGNORE_EXTS.has(ext)) continue
+
+        treeStr += `${currentPrefix}${marker}${entry.name}\n`
+
+        try {
+          const content = await fs.readFile(fullPath, 'utf-8')
+          fileList.push({ path: relativePath, content })
+        } catch {
+          // Skip
+        }
+      }
+    }
+    return treeStr
+  }
+
+  const tree = await walk(rootDir, '')
+  return { tree, files: fileList }
 }
 
 export function verifyHmac(signature: string, body: Buffer, secret: string): boolean {
@@ -183,6 +282,170 @@ Keep answers concise but informative.`
     }
   })
 
+  // Support both /ingest/:owner/:repo and /ingest/github.com/:owner/:repo
+  const handleIngest = async (req: express.Request, res: express.Response) => {
+    try {
+      const owner = req.params.owner as string
+      const repo = req.params.repo as string
+      if (!owner || !repo) {
+        return res.status(400).send('Owner and repo parameters are required')
+      }
+
+      // Check if it is a local repo
+      const matchedRepo = config.repos.find(r => {
+        const parts = r.remote.replace('https://github.com/', '').split('/')
+        return parts[0]?.toLowerCase() === owner.toLowerCase() && parts[1]?.toLowerCase() === repo.toLowerCase()
+      }) || config.repos.find(r => r.name.toLowerCase() === repo.toLowerCase())
+
+      let rootPath = ''
+      let isLocal = false
+      if (matchedRepo) {
+        rootPath = matchedRepo.path
+        isLocal = true
+      } else {
+        const brainDir = path.join(process.cwd(), '.brain')
+        rootPath = await downloadAndExtractRepo(owner, repo, brainDir)
+      }
+
+      const { tree, files } = await generateRepoDigest(rootPath)
+
+      // Calculate characteristics
+      const fileCount = files.length
+      const charCount = files.reduce((acc, f) => acc + f.content.length, 0)
+      const estimatedTokens = Math.round(charCount / 4)
+
+      // Build LLM-friendly prompt digest
+      let digestText = `================================================================\n`
+      digestText += `Directory Structure\n`
+      digestText += `================================================================\n`
+      digestText += tree + `\n`
+      digestText += `================================================================\n`
+      digestText += `File Contents\n`
+      digestText += `================================================================\n`
+      for (const file of files) {
+        digestText += `=========================================\n`
+        digestText += `File: ${file.path}\n`
+        digestText += `=========================================\n`
+        digestText += file.content + `\n\n`
+      }
+
+      // Clean up remote repo tmp dir
+      if (!isLocal) {
+        setTimeout(async () => {
+          try {
+            await fs.rm(path.dirname(rootPath), { recursive: true, force: true })
+          } catch (e) {
+            console.error('[brain/ingest] temp cleanup failed:', e)
+          }
+        }, 5000)
+      }
+
+      res.setHeader('Content-Type', 'text/html')
+      res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Brain Ingest - ${escapeHtml(owner)}/${escapeHtml(repo)}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --paper: #fffdf8;
+    --ink: #08090b;
+    --line: #111827;
+    --muted: #596171;
+    --pink: #ff4167;
+    --mint: #64e9a3;
+    --panel: #fff3d6;
+    --field: #e9f1ff;
+    --peach: #ffc174;
+    --shadow: #152033;
+  }
+  body { min-height: 100dvh; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--paper); color: var(--ink); }
+  .topbar { height: 72px; border-bottom: 3px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 0 clamp(18px, 5vw, 72px); }
+  .brand { font-size: 28px; font-weight: 900; }
+  .brand span { color: var(--pink); }
+  .meta { display: flex; align-items: center; gap: 12px; color: var(--line); font-size: 15px; }
+  .badge { display: inline-flex; align-items: center; height: 25px; padding: 0 8px; border: 2px solid var(--line); background: var(--pink); color: #fff; font-weight: 900; font-size: 12px; transform: rotate(-6deg); box-shadow: 2px 2px 0 var(--line); }
+  main { width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 40px 0 60px; }
+  .header { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 30px; }
+  h1 { font-size: clamp(28px, 5vw, 42px); font-weight: 950; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 30px; }
+  .card { border: 3px solid var(--line); border-radius: 6px; background: #fffaf0; padding: 20px; transition: all 0.2s ease; box-shadow: 4px 4px 0 var(--shadow); }
+  .card:hover { transform: translate(-3px, -3px); box-shadow: 8px 8px 0 var(--shadow); }
+  .card .value { font-size: 32px; font-weight: 950; color: var(--pink); }
+  .card .label { margin-top: 8px; color: var(--muted); font-size: 13px; font-weight: 850; text-transform: uppercase; }
+  .container { background: var(--panel); border: 4px solid var(--line); border-radius: 8px; box-shadow: 10px 10px 0 var(--shadow); padding: clamp(18px, 4vw, 30px); }
+  .actions { display: flex; gap: 16px; margin-bottom: 20px; }
+  button, .btn { display: inline-flex; align-items: center; justify-content: center; height: 50px; padding: 0 24px; border: 4px solid var(--line); border-radius: 6px; font-size: 16px; font-weight: 850; cursor: pointer; text-decoration: none; color: var(--ink); background: var(--peach); box-shadow: 4px 4px 0 var(--shadow); transition: all 0.15s ease; }
+  button:hover, .btn:hover { transform: translate(-2px, -2px); box-shadow: 6px 6px 0 var(--shadow); }
+  button:active, .btn:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--shadow); }
+  .btn.secondary { background: var(--field); }
+  textarea { width: 100%; height: 550px; border: 4px solid var(--line); border-radius: 6px; background: var(--field); padding: 20px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; font-weight: 700; line-height: 1.5; box-shadow: 4px 4px 0 var(--shadow); resize: none; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Br<span>ain</span></div>
+  <div class="meta"><span class="badge" style="transform: none; background: var(--mint); color: #000;">INGEST</span></div>
+</header>
+<main>
+  <div class="header">
+    <h1>${escapeHtml(owner)}/${escapeHtml(repo)}</h1>
+    <a href="/?repo=${encodeURIComponent(repo)}" class="btn secondary">View Dashboard</a>
+  </div>
+
+  <div class="stats">
+    <div class="card"><div class="value">${fileCount}</div><div class="label">Files Included</div></div>
+    <div class="card"><div class="value">${charCount.toLocaleString()}</div><div class="label">Total Characters</div></div>
+    <div class="card"><div class="value">${estimatedTokens.toLocaleString()}</div><div class="label">Est. GPT Tokens</div></div>
+    <div class="card"><div class="value" style="color: var(--mint);">${isLocal ? 'Local' : 'Remote'}</div><div class="label">Repo Location</div></div>
+  </div>
+
+  <div class="container">
+    <div class="actions">
+      <button onclick="copyDigest()">Copy LLM Prompt Digest</button>
+    </div>
+    <textarea id="digest-text" readonly>${escapeHtml(digestText)}</textarea>
+  </div>
+</main>
+<script>
+function copyDigest() {
+  const ta = document.getElementById('digest-text');
+  navigator.clipboard.writeText(ta.value);
+  const btn = document.querySelector('button');
+  const original = btn.textContent;
+  btn.textContent = 'Copied!';
+  btn.style.background = 'var(--mint)';
+  setTimeout(() => {
+    btn.textContent = original;
+    btn.style.background = '';
+  }, 2000);
+}
+</script>
+</body>
+</html>`)
+    } catch (err: any) {
+      console.error('[brain/ingest] error:', err)
+      res.setHeader('Content-Type', 'text/html')
+      res.status(500).send(`<!DOCTYPE html>
+<html lang="en">
+<head><title>Ingest Error</title><style>body { background: #fffdf8; color: #111827; font-family: sans-serif; padding: 40px; } .card { border: 4px solid #111827; background: #fff3d6; padding: 30px; border-radius: 8px; box-shadow: 8px 8px 0 #152033; max-width: 600px; margin: 0 auto; }</style></head>
+<body>
+  <div class="card">
+    <h1 style="color: #ff4167;">Ingestion Failed</h1>
+    <p style="margin-top: 15px; line-height: 1.6;">Could not download or process repository. Make sure the repository exists, is public, and is not empty.</p>
+    <code style="display: block; margin-top: 15px; padding: 10px; background: #e9f1ff; border: 2px solid #111827; border-radius: 4px; overflow-wrap: anywhere;">${escapeHtml(err.message)}</code>
+    <a href="/" style="display: inline-block; margin-top: 20px; font-weight: bold; color: #111827; text-decoration: underline;">Back to Dashboard</a>
+  </div>
+</body>
+</html>`)
+    }
+  }
+
+  app.get('/ingest/:owner/:repo', handleIngest)
+  app.get('/ingest/github.com/:owner/:repo', handleIngest)
+
   app.get('/', async (req, res) => {
     const repo = (req.query.repo as string) ?? config.repos[0]?.name
     if (!repo) return res.status(400).send('No repo configured')
@@ -210,6 +473,7 @@ Keep answers concise but informative.`
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Brain Dashboard - ${safeRepo}</title>
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; }
   :root {
     --paper: #fffdf8;
@@ -223,75 +487,116 @@ Keep answers concise but informative.`
     --peach: #ffc174;
     --shadow: #152033;
   }
-  body { min-height: 100dvh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--paper); color: var(--ink); }
-  .topbar { height: 72px; border-bottom: 3px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 0 clamp(18px, 5vw, 72px); }
-  .brand { font-size: 28px; font-weight: 900; letter-spacing: 0; }
+  body { min-height: 100dvh; font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif; background: var(--paper); color: var(--ink); }
+  .topbar { height: 72px; border-bottom: 3px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 0 clamp(18px, 5vw, 72px); background: #fffaf0; }
+  .brand { font-size: 28px; font-weight: 900; letter-spacing: -0.5px; }
   .brand span { color: var(--pink); }
   .meta { display: flex; align-items: center; gap: 12px; color: var(--line); font-size: 15px; }
-  .badge { display: inline-flex; align-items: center; height: 25px; padding: 0 8px; border: 2px solid var(--line); background: var(--pink); color: #fff; font-weight: 900; font-size: 12px; transform: rotate(-6deg); box-shadow: 2px 2px 0 var(--line); }
-  main { width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: clamp(34px, 7vw, 72px) 0 46px; }
-  .hero { text-align: center; position: relative; }
-  h1 { max-width: 760px; margin: 0 auto; font-size: clamp(52px, 8vw, 88px); line-height: .98; font-weight: 950; text-wrap: balance; letter-spacing: 0; }
-  .subtitle { margin: 24px auto 0; max-width: 660px; color: #3d4656; font-size: clamp(18px, 2vw, 22px); line-height: 1.45; text-wrap: pretty; }
+  .badge { display: inline-flex; align-items: center; height: 25px; padding: 0 8px; border: 2px solid var(--line); background: var(--pink); color: #fff; font-weight: 900; font-size: 12px; transform: rotate(-6deg); box-shadow: 2px 2px 0 var(--line); animation: pulse 2.5s infinite ease-in-out; }
+  
+  @keyframes pulse {
+    0% { transform: scale(1) rotate(-6deg); }
+    50% { transform: scale(1.05) rotate(-6deg); }
+    100% { transform: scale(1) rotate(-6deg); }
+  }
+
+  main { width: min(1200px, calc(100% - 32px)); margin: 0 auto; padding: clamp(34px, 7vw, 60px) 0 46px; }
+  .hero { text-align: center; position: relative; margin-bottom: 40px; }
+  h1 { max-width: 800px; margin: 0 auto; font-size: clamp(44px, 7vw, 76px); line-height: .98; font-weight: 950; text-wrap: balance; letter-spacing: -1px; }
+  .subtitle { margin: 20px auto 0; max-width: 660px; color: #3d4656; font-size: clamp(16px, 2vw, 20px); line-height: 1.45; text-wrap: pretty; }
   .spark { position: absolute; display: grid; place-items: center; color: var(--line); font-size: clamp(42px, 6vw, 74px); font-weight: 900; line-height: 1; }
   .spark::before { content: ""; width: .62em; height: .62em; border: 4px solid var(--line); background: var(--pink); transform: rotate(45deg); box-shadow: 0 0 0 8px var(--paper); }
   .spark.mint::before { background: var(--mint); }
-  .spark.left { left: 7%; top: 10%; }
-  .spark.right { right: 6%; top: 42%; }
-  .dashboard { margin: 46px auto 0; background: var(--panel); border: 4px solid var(--line); border-radius: 8px; box-shadow: 10px 10px 0 var(--shadow); padding: clamp(18px, 4vw, 30px); text-align: left; }
-  .query-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: stretch; }
-  textarea { width: 100%; min-height: 74px; resize: vertical; border: 4px solid var(--line); border-radius: 5px; background: var(--field); color: var(--line); padding: 18px 20px; font: 700 18px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; box-shadow: 5px 5px 0 var(--shadow); }
+  .spark.left { left: 5%; top: 10%; }
+  .spark.right { right: 4%; top: 40%; }
+  
+  .dashboard { margin: 20px auto 0; background: var(--panel); border: 4px solid var(--line); border-radius: 8px; box-shadow: 10px 10px 0 var(--shadow); padding: clamp(18px, 4vw, 30px); text-align: left; }
+  .query-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: stretch; margin-bottom: 20px; }
+  textarea { width: 100%; min-height: 74px; resize: vertical; border: 4px solid var(--line); border-radius: 5px; background: var(--field); color: var(--line); padding: 18px 20px; font: 700 18px/1.4 'JetBrains Mono', monospace; box-shadow: 5px 5px 0 var(--shadow); transition: all 0.15s ease; }
   textarea::placeholder { color: #6c7890; }
-  button { min-width: 132px; border: 4px solid var(--line); border-radius: 5px; background: var(--peach); color: var(--ink); font-size: 20px; font-weight: 850; cursor: pointer; box-shadow: 5px 5px 0 var(--shadow); }
-  button:focus-visible, textarea:focus-visible { outline: 3px solid var(--pink); outline-offset: 3px; }
-  button:active { transform: translate(3px, 3px); box-shadow: 2px 2px 0 var(--shadow); }
-  .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 26px 0 4px; }
-  .card { min-height: 92px; border: 3px solid var(--line); border-radius: 6px; background: #fffaf0; padding: 14px; }
+  textarea:focus { outline: none; border-color: var(--pink); transform: translate(-2px, -2px); box-shadow: 7px 7px 0 var(--shadow); }
+  
+  button { min-width: 132px; border: 4px solid var(--line); border-radius: 5px; background: var(--peach); color: var(--ink); font-size: 20px; font-weight: 850; cursor: pointer; box-shadow: 5px 5px 0 var(--shadow); transition: all 0.15s ease; }
+  button:hover { transform: translate(-2px, -2px); box-shadow: 7px 7px 0 var(--shadow); background: #ffb154; }
+  button:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--shadow); }
+  
+  #chat-output { background: #fffaf0; border: 3px solid var(--line); border-radius: 6px; padding: 20px; color: var(--line); font-size: 15px; min-height: 94px; line-height: 1.5; box-shadow: 4px 4px 0 var(--shadow); overflow-x: auto; }
+  #chat-output pre { background: #1a202c; color: #f7fafc; padding: 14px; border-radius: 4px; margin: 12px 0; overflow-x: auto; border: 2px solid var(--line); }
+  #chat-output code { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; }
+  #chat-output p { margin-bottom: 8px; }
+  #chat-output ul, #chat-output ol { padding-left: 20px; margin-bottom: 8px; }
+  #chat-output li { border: none; background: transparent; padding: 2px 0; box-shadow: none; list-style: inherit; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin: 26px 0; }
+  .card { min-height: 92px; border: 3px solid var(--line); border-radius: 6px; background: #fffaf0; padding: 14px; box-shadow: 4px 4px 0 var(--shadow); transition: all 0.2s ease; }
+  .card:hover { transform: translate(-3px, -3px); box-shadow: 7px 7px 0 var(--shadow); }
   .card .value { font-size: 30px; line-height: 1; font-weight: 950; color: var(--pink); font-variant-numeric: tabular-nums; }
   .card .label { margin-top: 8px; color: var(--muted); font-size: 12px; font-weight: 850; text-transform: uppercase; }
+  
   .grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(280px, .9fr); gap: 20px; margin-top: 28px; align-items: start; }
   .graph-panel { margin-top: 28px; }
   .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
   .microcopy { color: var(--muted); font-size: 13px; font-weight: 750; }
+  
   .graph-shell { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 14px; align-items: stretch; }
-  #graph-map { width: 100%; height: 520px; display: block; background: #fffaf0; border: 3px solid var(--line); border-radius: 6px; }
-  .graph-node { cursor: pointer; }
+  #graph-map { width: 100%; height: 520px; display: block; background: #fffaf0; border: 3px solid var(--line); border-radius: 6px; box-shadow: 4px 4px 0 var(--shadow); cursor: default; }
+  
+  .graph-node { cursor: pointer; transition: opacity 0.2s ease; }
+  .graph-node circle { transition: stroke-width 0.15s ease, r 0.15s ease; }
   .graph-node:hover circle { stroke-width: 5; }
   .graph-node.selected circle { fill: var(--mint); stroke-width: 5; }
   .graph-node.dim { opacity: .25; }
+  .graph-edge { transition: opacity 0.2s ease, stroke-width 0.2s ease; }
   .graph-edge.dim { opacity: .08; }
-  .graph-edge.selected { stroke: var(--pink); opacity: .92; stroke-width: 3; }
-  .inspector { min-height: 520px; background: #fffaf0; border: 3px solid var(--line); border-radius: 6px; padding: 16px; display: grid; grid-template-rows: auto auto 1fr; gap: 12px; }
-  .inspector h3 { font-size: 20px; line-height: 1.1; overflow-wrap: anywhere; }
-  .inspector code { display: block; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
-  .inspector p { color: #273244; line-height: 1.45; font-size: 14px; text-wrap: pretty; }
+  .graph-edge.selected { stroke: var(--pink); opacity: .92; stroke-width: 3.5; }
+  
+  .inspector { min-height: 520px; background: #fffaf0; border: 3px solid var(--line); border-radius: 6px; padding: 20px; display: grid; grid-template-rows: auto auto 1fr; gap: 14px; box-shadow: 4px 4px 0 var(--shadow); transition: all 0.2s ease; }
+  .inspector:hover { transform: translate(-3px, -3px); box-shadow: 7px 7px 0 var(--shadow); }
+  .inspector h3 { font-size: 20px; line-height: 1.1; overflow-wrap: anywhere; font-weight: 900; }
+  .inspector code { display: block; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; font-family: 'JetBrains Mono', monospace; font-weight: 700; margin-top: 4px; }
+  .inspector p { color: #273244; line-height: 1.5; font-size: 14px; text-wrap: pretty; }
+  
   .pill-row { display: flex; flex-wrap: wrap; gap: 8px; }
-  .pill { border: 2px solid var(--line); border-radius: 999px; padding: 4px 8px; background: var(--field); font-size: 12px; font-weight: 850; }
+  .pill { border: 2px solid var(--line); border-radius: 999px; padding: 4px 10px; background: var(--field); font-size: 11px; font-weight: 850; text-transform: uppercase; }
   .pill.hot { background: var(--pink); color: #fff; }
-  .neighbor-list { display: grid; gap: 8px; align-content: start; }
-  .neighbor-list div { border-top: 1px solid rgba(17,24,39,.18); padding-top: 8px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  
+  .neighbor-list { display: grid; gap: 8px; align-content: start; max-height: 250px; overflow-y: auto; }
+  .neighbor-list div { border-top: 1px solid rgba(17,24,39,.18); padding-top: 8px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; font-weight: 700; }
+  
   .legend { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 10px; color: var(--muted); font-size: 12px; font-weight: 800; }
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
   .dot { width: 12px; height: 12px; border: 2px solid var(--line); display: inline-block; }
   .dot.file { background: var(--pink); }
   .dot.symbol { background: var(--mint); }
   .dot.call { width: 18px; height: 3px; background: var(--line); border: 0; }
+  
   .dead-section { grid-column: 1 / -1; }
-  .dead-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
-  .dead-item { display: grid; gap: 4px; }
-  .dead-item code { color: var(--line); font-size: 12px; overflow-wrap: anywhere; }
-  .dead-item small { color: var(--muted); line-height: 1.4; }
+  .dead-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  .dead-item { display: grid; gap: 6px; box-shadow: 4px 4px 0 var(--shadow); transition: all 0.2s ease; }
+  .dead-item:hover { transform: translate(-3px, -3px); box-shadow: 7px 7px 0 var(--shadow); background: #fffaec; }
+  .dead-item code { color: var(--line); font-size: 12px; overflow-wrap: anywhere; font-family: 'JetBrains Mono', monospace; font-weight: 700; }
+  .dead-item small { color: var(--muted); line-height: 1.4; font-size: 11px; font-weight: 700; }
+  
   section { min-width: 0; }
-  h2 { margin: 0 0 12px; color: var(--line); font-size: 18px; font-weight: 950; }
-  table { width: 100%; border-collapse: collapse; background: #fffaf0; border: 3px solid var(--line); border-radius: 6px; overflow: hidden; table-layout: fixed; }
-  th { background: var(--field); color: var(--line); text-align: left; padding: 10px 12px; font-size: 12px; text-transform: uppercase; border-bottom: 3px solid var(--line); }
-  td { padding: 10px 12px; border-top: 1px solid rgba(17,24,39,.18); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  h2 { margin: 0 0 12px; color: var(--line); font-size: 20px; font-weight: 950; letter-spacing: -0.5px; }
+  
+  table { width: 100%; border-collapse: collapse; background: #fffaf0; border: 3px solid var(--line); border-radius: 6px; overflow: hidden; table-layout: fixed; box-shadow: 4px 4px 0 var(--shadow); }
+  th { background: var(--field); color: var(--line); text-align: left; padding: 10px 12px; font-size: 12px; text-transform: uppercase; border-bottom: 3px solid var(--line); font-weight: 900; }
+  td { padding: 10px 12px; border-top: 1px solid rgba(17,24,39,.18); font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  tr:hover td { background: rgba(17,24,39,0.02); }
+  
   ul { list-style: none; display: grid; gap: 10px; }
-  li { background: #fffaf0; border: 3px solid var(--line); border-radius: 6px; padding: 12px; font-size: 13px; }
-  li strong { color: var(--pink); display: block; margin-bottom: 5px; }
-  .empty, #chat-output { background: #fffaf0; border: 3px solid var(--line); border-radius: 6px; padding: 14px; color: var(--muted); font-size: 14px; }
-  #chat-output { margin-top: 16px; min-height: 94px; white-space: pre-wrap; color: var(--line); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; line-height: 1.45; }
-  .foot { margin-top: 24px; color: var(--muted); text-align: center; font-size: 14px; }
+  li { background: #fffaf0; border: 3px solid var(--line); border-radius: 6px; padding: 12px; font-size: 13px; box-shadow: 4px 4px 0 var(--shadow); transition: all 0.2s ease; }
+  li:hover { transform: translate(-2px, -2px); box-shadow: 6px 6px 0 var(--shadow); }
+  li strong { color: var(--pink); display: block; margin-bottom: 5px; font-weight: 900; }
+  
+  .empty { background: #fffaf0; border: 3px solid var(--line); border-radius: 6px; padding: 14px; color: var(--muted); font-size: 14px; box-shadow: 4px 4px 0 var(--shadow); }
+  .foot { margin-top: 40px; color: var(--muted); text-align: center; font-size: 14px; font-weight: 700; }
+  
+  /* Quick Filters styling */
+  .filter-input { width: 100%; margin-bottom: 12px; padding: 8px 12px; border: 3px solid var(--line); border-radius: 5px; background: #fff; font-weight: 700; font-size: 13px; box-shadow: 3px 3px 0 var(--shadow); outline: none; }
+  .filter-input:focus { border-color: var(--pink); }
+
   @media (max-width: 800px) {
     .topbar { height: auto; padding: 16px; align-items: flex-start; flex-direction: column; }
     .spark { display: none; }
@@ -308,14 +613,18 @@ Keep answers concise but informative.`
 <body>
 <header class="topbar">
   <div class="brand">Br<span>ain</span></div>
-  <div class="meta"><span class="badge">LIVE</span><span>${safeRepo}</span><span>${new Date().toLocaleString()}</span></div>
+  <div class="meta">
+    <span class="badge">LIVE</span>
+    <span>${safeRepo}</span>
+    <span style="font-weight: 700;">${new Date().toLocaleDateString()}</span>
+  </div>
 </header>
 <main>
   <div class="hero">
     <span class="spark left"></span>
     <span class="spark right mint"></span>
     <h1>Prompt-friendly code memory</h1>
-    <p class="subtitle">Track repository changes, hot zones, summaries, and ask grounded questions from one local dashboard.</p>
+    <p class="subtitle">Track repository stability, anomalous hot zones, memory decay, and generate instant prompt digests.</p>
   </div>
 
   <div class="dashboard">
@@ -333,7 +642,7 @@ Keep answers concise but informative.`
       <div class="card"><div class="value">${tier2Count}</div><div class="label">Tier 2 Episodes</div></div>
       <div class="card"><div class="value">${tier3Count}</div><div class="label">Tier 3 Facts</div></div>
       <div class="card"><div class="value">${tier4Count}</div><div class="label">Tier 4 Patterns</div></div>
-      <div class="card"><div class="value">30s</div><div class="label">Refresh</div></div>
+      <div class="card"><div class="value" style="color: var(--mint);">30s</div><div class="label">Refresh</div></div>
     </div>
 
     <section class="graph-panel">
@@ -360,44 +669,67 @@ Keep answers concise but informative.`
         <span><i class="dot file"></i>File</span>
         <span><i class="dot symbol"></i>Symbol</span>
         <span><i class="dot call"></i>Calls / Contains</span>
+        <span style="margin-left: auto;" class="microcopy">💡 Double-click background to reset zoom/pan · Drag to pan · Scroll to zoom</span>
       </div>
     </section>
 
     <div class="grid">
       <section>
         <h2>Hot Zones</h2>
+        <input type="text" class="filter-input" placeholder="Search hot zones..." oninput="filterTable('hotzones-table', this.value)">
         ${hotzones.length > 0
-          ? `<table><thead><tr><th>Symbol</th><th>File</th><th>Z-Score</th><th>Velocity</th></tr></thead><tbody>${hotzoneRows}</tbody></table>`
+          ? `<table id="hotzones-table"><thead><tr><th>Symbol</th><th>File</th><th>Z-Score</th><th>Velocity</th></tr></thead><tbody>${hotzoneRows}</tbody></table>`
           : '<p class="empty">No hot zones detected yet.</p>'}
       </section>
 
       <section>
         <h2>Recent Episodes</h2>
-        ${episodes.length > 0 ? `<ul>${episodeRows}</ul>` : '<p class="empty">No episodes yet. Run scan or receive webhook events.</p>'}
+        <input type="text" class="filter-input" placeholder="Search episodes..." oninput="filterList('episodes-list', this.value)">
+        ${episodes.length > 0 ? `<ul id="episodes-list">${episodeRows}</ul>` : '<p class="empty">No episodes yet. Run scan or receive webhook events.</p>'}
       </section>
 
       <section class="dead-section">
         <h2>Dead Code Candidates</h2>
+        <input type="text" class="filter-input" placeholder="Search dead code candidates..." oninput="filterDeadCode(this.value)">
         <div id="dead-code-list" class="dead-list"><p class="empty">Loading candidates...</p></div>
       </section>
     </div>
   </div>
-  <p class="foot">Local-first knowledge graph dashboard.</p>
+  <p class="foot">Living Codebase Brain Dashboard · <a href="/ingest/brain/brain" style="color: var(--pink); font-weight: 800; text-decoration: underline;">Ingest Prompt Dump</a></p>
 </main>
 
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
+// Configure marked options
+marked.setOptions({
+  breaks: true,
+  gfm: true
+});
+
 async function askBrain() {
   const input = document.getElementById('query-input')
   const output = document.getElementById('chat-output')
   const q = input.value.trim()
   if (!q) return
+  
+  output.style.opacity = '0.7'
   output.textContent = 'Thinking...'
+  
   try {
     const r = await fetch('/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo: ${repoJson}, prompt: q, stream: false }) })
     const d = await r.json()
-    output.textContent = d.answer || d.error || 'No answer'
-  } catch (e) { output.textContent = 'Error: ' + e.message }
+    output.style.opacity = '1'
+    if (d.answer) {
+      output.innerHTML = marked.parse(d.answer)
+    } else {
+      output.textContent = d.error || 'No answer'
+    }
+  } catch (e) { 
+    output.style.opacity = '1'
+    output.textContent = 'Error: ' + e.message 
+  }
 }
+
 async function loadGraph() {
   const metrics = document.getElementById('graph-metrics')
   const deadList = document.getElementById('dead-code-list')
@@ -407,7 +739,10 @@ async function loadGraph() {
     if (!r.ok) throw new Error(data.error || 'Graph request failed')
     metrics.textContent = data.metrics.nodeCount + ' nodes · ' + data.metrics.edgeCount + ' edges · ' + data.metrics.deadCodeCount + ' dead-code candidates'
     renderGraph(data)
-    renderDeadCode(data.deadCode || [])
+    
+    // Save original dead code items for filtering
+    window.originalDeadCode = data.deadCode || []
+    renderDeadCode(window.originalDeadCode)
   } catch (e) {
     metrics.textContent = 'Graph unavailable'
     deadList.innerHTML = ''
@@ -417,6 +752,7 @@ async function loadGraph() {
     deadList.appendChild(p)
   }
 }
+
 let graphState = null
 let selectedGraphNodeId = null
 
@@ -426,7 +762,7 @@ function renderDeadCode(items) {
   if (!items.length) {
     const p = document.createElement('p')
     p.className = 'empty'
-    p.textContent = 'No candidates found in visible graph.'
+    p.textContent = 'No candidates found.'
     list.appendChild(p)
     return
   }
@@ -445,6 +781,41 @@ function renderDeadCode(items) {
     list.appendChild(box)
   }
 }
+
+// Client side filtering helpers
+function filterTable(tableId, query) {
+  const table = document.getElementById(tableId)
+  if (!table) return
+  const rows = table.getElementsByTagName('tr')
+  const q = query.toLowerCase()
+  for (let i = 1; i < rows.length; i++) {
+    const text = rows[i].textContent.toLowerCase()
+    rows[i].style.display = text.includes(q) ? '' : 'none'
+  }
+}
+
+function filterList(listId, query) {
+  const list = document.getElementById(listId)
+  if (!list) return
+  const items = list.getElementsByTagName('li')
+  const q = query.toLowerCase()
+  for (let i = 0; i < items.length; i++) {
+    const text = items[i].textContent.toLowerCase()
+    items[i].style.display = text.includes(q) ? '' : 'none'
+  }
+}
+
+function filterDeadCode(query) {
+  if (!window.originalDeadCode) return
+  const q = query.toLowerCase()
+  const filtered = window.originalDeadCode.filter(item => 
+    item.name.toLowerCase().includes(q) || 
+    item.file.toLowerCase().includes(q) ||
+    item.kind.toLowerCase().includes(q)
+  )
+  renderDeadCode(filtered)
+}
+
 function renderGraph(data) {
   graphState = data
   const svg = document.getElementById('graph-map')
@@ -453,6 +824,11 @@ function renderGraph(data) {
   const height = Math.max(280, Math.floor(bounds.height))
   svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height)
   svg.innerHTML = ''
+
+  // Create viewport group for Zoom & Pan support
+  const viewportGroup = svgEl('g')
+  viewportGroup.setAttribute('id', 'graph-viewport')
+  svg.appendChild(viewportGroup)
 
   const nodes = layoutClusterGraph(data.nodes || [], width, height)
   const byId = new Map(nodes.map(n => [n.id, n]))
@@ -464,7 +840,65 @@ function renderGraph(data) {
 
   const edgeGroup = svgEl('g')
   const nodeGroup = svgEl('g')
-  svg.append(edgeGroup, nodeGroup)
+  viewportGroup.append(edgeGroup, nodeGroup)
+
+  // Zoom & Pan state
+  let zoom = 1
+  let panX = 0
+  let panY = 0
+  let isDragging = false
+  let startX = 0
+  let startY = 0
+
+  function updateTransform() {
+    viewportGroup.setAttribute('transform', 'translate(' + panX + ', ' + panY + ') scale(' + zoom + ')')
+  }
+
+  svg.addEventListener('dblclick', () => {
+    zoom = 1
+    panX = 0
+    panY = 0
+    updateTransform()
+  })
+
+  svg.addEventListener('wheel', (e) => {
+    e.preventDefault()
+    const zoomFactor = 1.08
+    const oldZoom = zoom
+    if (e.deltaY < 0) {
+      zoom = Math.min(zoom * zoomFactor, 6)
+    } else {
+      zoom = Math.max(zoom / zoomFactor, 0.25)
+    }
+    const rect = svg.getBoundingClientRect()
+    const mouseX = e.clientX - rect.left
+    const mouseY = e.clientY - rect.top
+    panX = mouseX - (mouseX - panX) * (zoom / oldZoom)
+    panY = mouseY - (mouseY - panY) * (zoom / oldZoom)
+    updateTransform()
+  }, { passive: false })
+
+  svg.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.graph-node')) return
+    isDragging = true
+    startX = e.clientX - panX
+    startY = e.clientY - panY
+    svg.style.cursor = 'grabbing'
+  })
+
+  window.addEventListener('mousemove', (e) => {
+    if (!isDragging) return
+    panX = e.clientX - startX
+    panY = e.clientY - startY
+    updateTransform()
+  })
+
+  window.addEventListener('mouseup', () => {
+    if (isDragging) {
+      isDragging = false
+      svg.style.cursor = 'default'
+    }
+  })
 
   for (const edge of data.edges || []) {
     const source = byId.get(edge.source)
@@ -634,6 +1068,7 @@ function updateInspector(node, edges, summary, connected = null, deadCode = null
   }
 
   const body = document.createElement('p')
+  body.style.marginTop = '10px'
   body.textContent = summary
 
   const neighbors = document.createElement('div')
@@ -657,11 +1092,6 @@ function colorForKind(kind) {
   if (kind === 'class' || kind === 'interface') return '#64e9a3'
   if (kind === 'function') return '#ffc174'
   return '#e9f1ff'
-}
-function hash(value) {
-  let h = 2166136261
-  for (let i = 0; i < value.length; i++) h = Math.imul(h ^ value.charCodeAt(i), 16777619)
-  return Math.abs(h)
 }
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value))

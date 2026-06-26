@@ -143,7 +143,16 @@ function walkTree(node: Parser.SyntaxNode, source: string, _language: string): W
 }
 
 function hasExportModifier(node: Parser.SyntaxNode): boolean {
-  return node.children.some(c => c.type === 'export' || c.text === 'export')
+  if (node.children.some(c => c.type === 'export' || c.text === 'export')) {
+    return true
+  }
+  let p = node.parent
+  while (p) {
+    if (p.type === 'export_statement') return true
+    if (p.type === 'statement_block' || p.type === 'program') break
+    p = p.parent
+  }
+  return false
 }
 
 function extractCalls(node: Parser.SyntaxNode): string[] {
