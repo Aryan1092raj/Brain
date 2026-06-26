@@ -29,6 +29,7 @@ import { mcp } from './mcp.js'
 import { status } from './status.js'
 import { queryCommand } from './query.js'
 import { scan } from './scan.js'
+import { diffImpactCommand } from './diff-impact.js'
 
 const cmd = process.argv[2]
 const cwd = process.cwd()
@@ -69,7 +70,12 @@ if (cmd === 'init') {
     console.error('[brain] scan failed:', err)
     process.exit(1)
   })
+} else if (cmd === 'diff-impact') {
+  diffImpactCommand(cwd, process.argv.slice(3)).catch(err => {
+    console.error('[brain] diff-impact failed:', err)
+    process.exit(1)
+  })
 } else {
-  console.info('Usage: brain [init|watch|scan|status|query|ask|mcp]')
+  console.info('Usage: brain [init|watch|scan|status|query|ask|mcp|diff-impact]')
   process.exit(1)
 }

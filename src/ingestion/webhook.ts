@@ -9,6 +9,7 @@ import { getSkeletonCode } from './tree-sitter.js'
 import { buildContext, formatRichContext } from '../query/context-builder.js'
 import { streamQuery, query as queryLlm } from '../query/engine.js'
 import { getGraphOverview } from '../graph/insights.js'
+import { computeLocalDiffImpact } from '../query/diff-impact.js'
 import type { Config } from '../config/schema.js'
 
 const exec = promisify(execFile)
@@ -29,6 +30,31 @@ function redactSecrets(content: string): string {
     redacted = redacted.replace(pattern, '[REDACTED SECRET]')
   }
   return redacted
+}
+
+function globToRegex(glob: string): RegExp {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+  const regexStr = escaped.replace(/\*/g, '.*').replace(/\?/g, '.')
+  return new RegExp(`^${regexStr}$`, 'i')
+}
+
+function shouldIgnorePath(relativePath: string, ignorePatterns: string[]): boolean {
+  if (ignorePatterns.length === 0) return false
+  return ignorePatterns.some(pat => {
+    const trimmed = pat.trim()
+    if (!trimmed) return false
+    try {
+      const regex = globToRegex(trimmed)
+      if (trimmed.includes('/')) {
+        return regex.test(relativePath) || regex.test(relativePath + '/')
+      } else {
+        const base = path.basename(relativePath)
+        return regex.test(base)
+      }
+    } catch {
+      return false
+    }
+  })
 }
 
 function escapeHtml(value: unknown): string {
@@ -89,10 +115,11 @@ function fileLanguage(fileName: string): string {
 
 async function generateRepoDigest(
   rootDir: string,
-  opts?: { maxSize?: number; compress?: boolean }
+  opts?: { maxSize?: number; compress?: boolean; ignorePatterns?: string[] }
 ): Promise<{ tree: string; files: Array<{ path: string; content: string; size: number }> }> {
   const maxSize = opts?.maxSize ?? 60000
   const compress = opts?.compress ?? false
+  const ignorePatterns = opts?.ignorePatterns ?? []
 
   const IGNORE_DIRS = new Set(['node_modules', '.git', '.brain', 'dist', 'target', 'build', '.next', '.cache', '__pycache__', 'venv', '.env'])
   const IGNORE_EXTS = new Set([
@@ -123,6 +150,10 @@ async function generateRepoDigest(
 
       const fullPath = path.join(dir, entry.name)
       const relativePath = path.relative(rootDir, fullPath)
+
+      if (shouldIgnorePath(relativePath, ignorePatterns)) {
+        continue
+      }
 
       if (entry.isDirectory()) {
         if (IGNORE_DIRS.has(entry.name)) continue
@@ -172,7 +203,7 @@ interface TreeNode {
   children?: TreeNode[]
 }
 
-async function buildDirectoryTree(rootDir: string, dir = rootDir): Promise<TreeNode[]> {
+async function buildDirectoryTree(rootDir: string, dir = rootDir, ignorePatterns: string[] = []): Promise<TreeNode[]> {
   const IGNORE_DIRS = new Set(['node_modules', '.git', '.brain', 'dist', 'target', 'build', '.next', '.cache', '__pycache__', 'venv', '.env'])
   const IGNORE_EXTS = new Set([
     'png', 'jpg', 'jpeg', 'gif', 'ico', 'pdf', 'zip', 'gz', 'tar', 'exe', 'dll', 'so', 'dylib',
@@ -195,9 +226,13 @@ async function buildDirectoryTree(rootDir: string, dir = rootDir): Promise<TreeN
     const fullPath = path.join(dir, entry.name)
     const relativePath = path.relative(rootDir, fullPath)
 
+    if (shouldIgnorePath(relativePath, ignorePatterns)) {
+      continue
+    }
+
     if (entry.isDirectory()) {
       if (IGNORE_DIRS.has(entry.name)) continue
-      const children = await buildDirectoryTree(rootDir, fullPath)
+      const children = await buildDirectoryTree(rootDir, fullPath, ignorePatterns)
       if (children.length > 0) {
         result.push({ name: entry.name, type: 'directory', children })
       }
@@ -314,6 +349,26 @@ Keep answers concise but informative.`
     }
   })
 
+  app.get('/graph/diff-impact', async (req, res) => {
+    try {
+      const repo = req.query.repo as string
+      if (!repo) {
+        return res.status(400).json({ error: 'repo query param required' })
+      }
+
+      const matchedRepo = config.repos.find(r => r.name === repo)
+      if (!matchedRepo) {
+        return res.status(404).json({ error: 'repo not configured' })
+      }
+
+      const impacts = await computeLocalDiffImpact(matchedRepo.path, repo)
+      res.json(impacts)
+    } catch (err) {
+      console.error('[brain] diff-impact error:', err)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  })
+
   app.get('/graph/explain', async (req, res) => {
     try {
       const repo = req.query.repo as string
@@ -396,6 +451,8 @@ Keep answers concise but informative.`
       const format = (req.query.format as string) === 'xml' ? 'xml' : 'text'
       const maxSize = req.query.maxSize ? Number(req.query.maxSize) : 60000
       const compress = req.query.compress === 'true'
+      const ignoreParam = req.query.ignore as string | undefined
+      const ignorePatterns = ignoreParam ? ignoreParam.split(',').map(s => s.trim()).filter(Boolean) : []
 
       // Check if it is a local repo
       const matchedRepo = config.repos.find(r => {
@@ -413,8 +470,8 @@ Keep answers concise but informative.`
         rootPath = await downloadAndExtractRepo(owner, repo, brainDir)
       }
 
-      const { tree, files } = await generateRepoDigest(rootPath, { maxSize, compress })
-      const nestedTree = await buildDirectoryTree(rootPath)
+      const { tree, files } = await generateRepoDigest(rootPath, { maxSize, compress, ignorePatterns })
+      const nestedTree = await buildDirectoryTree(rootPath, rootPath, ignorePatterns)
 
       // Calculate characteristics
       const fileCount = files.length
@@ -558,6 +615,11 @@ Keep answers concise but informative.`
             <span>Skeleton Mode (Compress)</span>
           </label>
         </div>
+        
+        <div class="setting-item" style="margin-top: 8px;">
+          <label for="ignore-input">Exclude Patterns</label>
+          <input type="text" id="ignore-input" value="${escapeHtml(ignoreParam ?? '')}" placeholder="e.g. *.log,src/config/*" onchange="reloadSettings()">
+        </div>
       </div>
       
       <h2>File Tree</h2>
@@ -692,11 +754,13 @@ function reloadSettings() {
   const compress = document.getElementById('compress-toggle').checked;
   const maxSize = document.getElementById('size-limit-select').value;
   const format = document.getElementById('format-select').value;
+  const ignore = document.getElementById('ignore-input').value;
 
   const url = new URL(window.location.href);
   url.searchParams.set('compress', compress ? 'true' : 'false');
   url.searchParams.set('maxSize', maxSize);
   url.searchParams.set('format', format);
+  url.searchParams.set('ignore', ignore);
   window.location.href = url.toString();
 }
 
@@ -983,6 +1047,11 @@ toggleFile();
       </section>
 
       <section class="dead-section">
+        <h2>Pending Changes Impact</h2>
+        <div id="diff-impact-list" class="dead-list"><p class="empty">Loading local diff impact...</p></div>
+      </section>
+
+      <section class="dead-section">
         <h2>Dead Code Candidates</h2>
         <input type="text" class="filter-input" placeholder="Search dead code candidates..." oninput="filterDeadCode(this.value)">
         <div id="dead-code-list" class="dead-list"><p class="empty">Loading candidates...</p></div>
@@ -1108,6 +1177,49 @@ function filterDeadCode(query) {
     item.kind.toLowerCase().includes(q)
   )
   renderDeadCode(filtered)
+}
+
+async function loadDiffImpact() {
+  const list = document.getElementById('diff-impact-list')
+  if (!list) return
+  try {
+    const r = await fetch('/graph/diff-impact?repo=' + encodeURIComponent(${repoJson}))
+    const data = await r.json()
+    if (!r.ok) throw new Error(data.error || 'Diff impact failed')
+    
+    list.innerHTML = ''
+    if (!data.length) {
+      list.innerHTML = '<p class="empty" style="grid-column: 1 / -1;">No uncommitted changes detected or no containing symbols affected.</p>'
+      return
+    }
+    
+    for (const fileImpact of data) {
+      for (const sym of fileImpact.symbols) {
+        const box = document.createElement('div')
+        box.className = 'empty dead-item'
+        box.style.borderLeft = '4px solid var(--pink)'
+        
+        const title = document.createElement('strong')
+        title.textContent = sym.symbolFqn.split(':').pop() + ' (' + sym.kind + ')'
+        
+        const loc = document.createElement('code')
+        loc.textContent = fileImpact.filePath + ':' + sym.lineStart + '-' + sym.lineEnd
+        
+        const impactText = document.createElement('small')
+        if (sym.ripple.length === 0) {
+          impactText.textContent = 'No downstream impact.'
+        } else {
+          impactText.textContent = 'Affects ' + sym.ripple.length + ' symbols downstream: ' + 
+            sym.ripple.map(rip => rip.fqn.split(':').pop()).join(', ')
+        }
+        
+        box.append(title, loc, impactText)
+        list.appendChild(box)
+      }
+    }
+  } catch (e) {
+    list.innerHTML = '<p class="empty" style="grid-column: 1 / -1;">Error loading diff impact: ' + e.message + '</p>'
+  }
 }
 
 function renderGraph(data) {
@@ -1392,6 +1504,8 @@ function clamp(value, min, max) {
 }
 loadGraph()
 setInterval(loadGraph, 30000)
+loadDiffImpact()
+setInterval(loadDiffImpact, 15000)
 </script>
 </body>
 </html>`)
