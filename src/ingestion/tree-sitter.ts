@@ -12,6 +12,7 @@ import JavaScript from 'tree-sitter-javascript'
 import Python from 'tree-sitter-python'
 import fs from 'node:fs/promises'
 import type { FileChange } from './diff-parser.js'
+import { getKuzuClient } from '../graph/client.js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Language = any
@@ -66,8 +67,38 @@ export async function extractSymbolDelta(
 ): Promise<SymbolDelta> {
   const filePath = `${repoPath}/${change.path}`
 
+  // Helper to retrieve existing symbols from Kuzu
+  const fetchExistingSymbols = async (): Promise<Array<{ name: string; kind: string; line_start: number; line_end: number; is_exported: boolean }>> => {
+    try {
+      const db = getKuzuClient()
+      const rows = await db.query<{
+        name: string
+        kind: string
+        line_start: number
+        line_end: number
+        is_exported: boolean
+      }>(
+        `MATCH (f:File {path: $path})-[:Contains]->(s:Symbol)
+         RETURN s.name AS name, s.kind AS kind, s.line_start AS line_start, s.line_end AS line_end, s.is_exported AS is_exported`,
+        { path: change.path }
+      )
+      return rows
+    } catch {
+      return []
+    }
+  }
+
   if (change.status === 'removed') {
-    return { file: change.path, language, added: [], removed: [], modified: [], importsAdded: [], importsRemoved: [] }
+    const existing = await fetchExistingSymbols()
+    const removed: ExtractedSymbol[] = existing.map(e => ({
+      name: e.name,
+      kind: e.kind as SymbolKind,
+      lineStart: Number(e.line_start),
+      lineEnd: Number(e.line_end),
+      isExported: Boolean(e.is_exported),
+      calls: []
+    }))
+    return { file: change.path, language, added: [], removed, modified: [], importsAdded: [], importsRemoved: [] }
   }
 
   const parser = getParser(language)
@@ -85,12 +116,53 @@ export async function extractSymbolDelta(
   const tree = parser.parse(source)
   const symbols = walkTree(tree.rootNode, source, language)
 
+  const existing = await fetchExistingSymbols()
+
+  const added: ExtractedSymbol[] = []
+  const removed: ExtractedSymbol[] = []
+  const modified: ExtractedSymbol[] = []
+
+  const existingMap = new Map(existing.map(s => [s.name, s]))
+  const parsedMap = new Map(symbols.symbols.map(s => [s.name, s]))
+
+  // Classify added and modified
+  for (const sym of symbols.symbols) {
+    const exist = existingMap.get(sym.name)
+    if (!exist) {
+      added.push(sym)
+    } else {
+      const isModified =
+        exist.kind !== sym.kind ||
+        Number(exist.line_start) !== sym.lineStart ||
+        Number(exist.line_end) !== sym.lineEnd ||
+        Boolean(exist.is_exported) !== sym.isExported
+
+      if (isModified) {
+        modified.push(sym)
+      }
+    }
+  }
+
+  // Classify removed
+  for (const exist of existing) {
+    if (!parsedMap.has(exist.name)) {
+      removed.push({
+        name: exist.name,
+        kind: exist.kind as SymbolKind,
+        lineStart: Number(exist.line_start),
+        lineEnd: Number(exist.line_end),
+        isExported: Boolean(exist.is_exported),
+        calls: []
+      })
+    }
+  }
+
   return {
     file: change.path,
     language,
-    added: symbols.symbols,
-    removed: [],
-    modified: [],
+    added,
+    removed,
+    modified,
     importsAdded: symbols.imports,
     importsRemoved: [],
   }

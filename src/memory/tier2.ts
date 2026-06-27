@@ -1,20 +1,6 @@
-import OpenAI from 'openai'
 import { getDb } from './db.js'
 import { getTier1EventsSince } from './tier1.js'
-
-const MODEL = 'llama-3.3-70b-versatile'
-
-let _client: OpenAI | null = null
-
-function getClient(): OpenAI {
-  if (!_client) {
-    _client = new OpenAI({
-      apiKey: process.env.GROQ_API_KEY ?? '',
-      baseURL: 'https://api.groq.com/openai/v1',
-    })
-  }
-  return _client
-}
+import { getClient, getModel } from '../query/engine.js'
 
 const TTL_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -39,7 +25,7 @@ export async function compressTier1ToTier2(repo: string): Promise<void> {
   ).join('\n')
 
   const response = await getClient().chat.completions.create({
-    model: MODEL,
+    model: getModel(),
     max_tokens: 400,
     messages: [
       {

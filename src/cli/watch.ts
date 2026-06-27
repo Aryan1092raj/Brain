@@ -1,6 +1,6 @@
 import { loadConfig } from '../config/loader.js'
 import { createWebhookServer } from '../ingestion/webhook.js'
-import { startScheduler } from '../memory/scheduler.js'
+import { startScheduler, stopScheduler } from '../memory/scheduler.js'
 import { initKuzu, closeKuzu } from '../graph/client.js'
 import { initSqlite, closeDb } from '../memory/db.js'
 import { init } from './init.js'
@@ -41,6 +41,7 @@ export async function watch(cwd: string): Promise<void> {
 
   const shutdown = async (signal: string) => {
     console.info(`[brain] received ${signal}, draining ${inFlight} in-flight pipelines...`)
+    stopScheduler()
     if (server) server.close()
 
     const deadline = Date.now() + 10000

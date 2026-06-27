@@ -1,5 +1,6 @@
 import { buildContext, formatContext } from '../query/context-builder.js'
 import type { RepoConfig } from '../config/schema.js'
+import { getClient, getModel } from '../query/engine.js'
 
 export interface ReviewResult {
   summary: string
@@ -13,17 +14,12 @@ export async function reviewCommit(
   commitSha: string,
   patchContent: string,
 ): Promise<ReviewResult> {
-  const { default: OpenAI } = await import('openai')
-  const client = new OpenAI({
-    apiKey: process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || '',
-    baseURL: 'https://api.groq.com/openai/v1',
-  })
-
+  const client = getClient()
   const ctx = buildContext(repo.name)
   const contextStr = formatContext(ctx)
 
   const response = await client.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
+    model: getModel(),
     messages: [
       {
         role: 'system',

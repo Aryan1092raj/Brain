@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
-import { verifyHmac } from './webhook.js'
+import { verifyHmac } from './helpers.js'
 
 const body = Buffer.from(JSON.stringify({ ok: true }))
 const secret = 'test-secret'

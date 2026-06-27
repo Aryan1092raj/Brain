@@ -1,6 +1,10 @@
-import { readdirSync, existsSync } from "fs";
+import { readdirSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { exec } from "child_process";
+import { promisify } from "util";
+
+const execAsync = promisify(exec);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const srcDir = join(__dirname, "src");
@@ -32,13 +36,15 @@ let failed = 0;
 
 for (const testFile of tests) {
   try {
-    await import(testFile);
+    const { stdout, stderr } = await execAsync(`npx tsx "${testFile}"`);
     passed++;
     console.log(`PASS: ${testFile}`);
-  } catch (err) {
+    if (stdout.trim()) console.log(stdout.trim());
+  } catch (err: any) {
     failed++;
     console.error(`FAIL: ${testFile}`);
-    console.error(err);
+    if (err.stdout) console.error(err.stdout.trim());
+    if (err.stderr) console.error(err.stderr.trim());
   }
 }
 

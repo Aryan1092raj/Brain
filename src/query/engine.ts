@@ -1,17 +1,21 @@
 import OpenAI from 'openai'
 
-const MODEL = 'llama-3.3-70b-versatile'
-
 let _client: OpenAI | null = null
 
-function getClient(): OpenAI {
+export function getClient(): OpenAI {
   if (!_client) {
+    const apiKey = process.env.BRAIN_LLM_API_KEY || process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || ''
+    const baseURL = process.env.BRAIN_LLM_BASE_URL || (process.env.OPENAI_API_KEY ? undefined : 'https://api.groq.com/openai/v1')
     _client = new OpenAI({
-      apiKey: process.env.GROQ_API_KEY ?? '',
-      baseURL: 'https://api.groq.com/openai/v1',
+      apiKey,
+      baseURL,
     })
   }
   return _client
+}
+
+export function getModel(): string {
+  return process.env.BRAIN_LLM_MODEL || (process.env.OPENAI_API_KEY ? 'gpt-4o-mini' : 'llama-3.3-70b-versatile')
 }
 
 export interface QueryOptions {
@@ -27,7 +31,7 @@ export async function* streamQuery(
 ): AsyncGenerator<string> {
   const client = getClient()
   const stream = await client.chat.completions.create({
-    model: MODEL,
+    model: getModel(),
     messages: [
       { role: 'system', content: system },
       { role: 'user', content: user },
@@ -50,7 +54,7 @@ export async function query(
 ): Promise<string> {
   const client = getClient()
   const response = await client.chat.completions.create({
-    model: MODEL,
+    model: getModel(),
     messages: [
       { role: 'system', content: system },
       { role: 'user', content: user },

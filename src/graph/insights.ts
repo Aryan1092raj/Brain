@@ -11,6 +11,8 @@ export interface GraphNode {
   exported?: boolean
   velocity?: number
   decayScore?: number
+  lastTouched?: string | number
+  stability?: number
 }
 
 export interface GraphEdge {
@@ -50,6 +52,8 @@ interface SymbolRow {
   lineStart: number
   velocity: number
   decayScore: number
+  lastTouched: string | number
+  stability: number
 }
 
 interface CallRow {
@@ -70,7 +74,9 @@ export async function getGraphOverview(repo: string, limit = 90): Promise<GraphO
       s.is_exported AS exported,
       s.line_start AS lineStart,
       s.velocity AS velocity,
-      s.decay_score AS decayScore
+      s.decay_score AS decayScore,
+      s.last_touched AS lastTouched,
+      s.stability AS stability
     ORDER BY s.file, s.line_start
     LIMIT $limit
   `, { repo, limit })
@@ -82,18 +88,43 @@ export async function getGraphOverview(repo: string, limit = 90): Promise<GraphO
     LIMIT 180
   `, { repo })
 
+  // Query files from Kuzu to get their real properties
+  const files = await kuzu.query<{
+    path: string
+    decayScore: number
+    lastTouched: string | number
+    stability: number
+  }>(`
+    MATCH (f:File {repo: $repo})
+    RETURN
+      f.path AS path,
+      f.decay_score AS decayScore,
+      f.last_touched AS lastTouched,
+      f.stability AS stability
+    LIMIT 100
+  `, { repo }).catch(() => [])
+
   const symbolIds = new Set(symbols.map(s => s.fqn))
   const visibleCalls = calls.filter(c => symbolIds.has(c.source) && symbolIds.has(c.target))
+  
+  // Mix file nodes from queried Kuzu files and symbol-extracted files
   const filePaths = [...new Set(symbols.map(s => s.file))].slice(0, 28)
+  const fileMap = new Map(files.map(f => [f.path, f]))
   const fileIds = new Map(filePaths.map(file => [file, `file:${file}`]))
 
   const nodes: GraphNode[] = [
-    ...filePaths.map(file => ({
-      id: `file:${file}`,
-      label: file.split('/').pop() ?? file,
-      type: 'file' as const,
-      file,
-    })),
+    ...filePaths.map(file => {
+      const fData = fileMap.get(file)
+      return {
+        id: `file:${file}`,
+        label: file.split('/').pop() ?? file,
+        type: 'file' as const,
+        file,
+        decayScore: fData ? fData.decayScore : 1.0,
+        lastTouched: fData ? fData.lastTouched : undefined,
+        stability: fData ? fData.stability : 30.0,
+      }
+    }),
     ...symbols.map(s => ({
       id: s.fqn,
       label: s.name,
@@ -104,6 +135,8 @@ export async function getGraphOverview(repo: string, limit = 90): Promise<GraphO
       exported: s.exported,
       velocity: s.velocity,
       decayScore: s.decayScore,
+      lastTouched: s.lastTouched,
+      stability: s.stability || 14.0,
     })),
   ]
 

@@ -27,38 +27,38 @@ export class KuzuClient {
   constructor(private conn: Connection) {}
 
   async run(cypher: string, params?: Record<string, unknown>): Promise<void> {
-    const q = inlineParams(cypher, params)
     await acquireLock(async () => {
-      const result = await this.conn.query(q)
+      let result
+      if (params && Object.keys(params).length > 0) {
+        const stmt = await this.conn.prepare(cypher)
+        if (!stmt.isSuccess()) {
+          throw new Error(`Failed to prepare Cypher statement: ${stmt.getErrorMessage()}\nQuery: ${cypher}`)
+        }
+        result = await this.conn.execute(stmt, params as any)
+      } else {
+        result = await this.conn.query(cypher)
+      }
       const qr = Array.isArray(result) ? result[0] : result
       await qr.getAll()
     })
   }
 
   async query<T>(cypher: string, params?: Record<string, unknown>): Promise<T[]> {
-    const q = inlineParams(cypher, params)
     return acquireLock(async () => {
-      const result = await this.conn.query(q)
+      let result
+      if (params && Object.keys(params).length > 0) {
+        const stmt = await this.conn.prepare(cypher)
+        if (!stmt.isSuccess()) {
+          throw new Error(`Failed to prepare Cypher statement: ${stmt.getErrorMessage()}\nQuery: ${cypher}`)
+        }
+        result = await this.conn.execute(stmt, params as any)
+      } else {
+        result = await this.conn.query(cypher)
+      }
       const qr = Array.isArray(result) ? result[0] : result
       return (await qr.getAll()) as T[]
     })
   }
-}
-
-function inlineParams(cypher: string, params?: Record<string, unknown>): string {
-  if (!params) return cypher
-  let q = cypher
-  for (const [k, v] of Object.entries(params)) {
-    const escaped = typeof v === 'string'
-      ? `'${v.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`
-      : v instanceof Date
-        ? `CAST('${v.toISOString()}' AS TIMESTAMP)`
-        : typeof v === 'boolean'
-          ? String(v)
-          : String(v)
-    q = q.replace(new RegExp(`\\$${k}\\b`, 'g'), () => escaped)
-  }
-  return q
 }
 
 export function closeKuzu(): void {

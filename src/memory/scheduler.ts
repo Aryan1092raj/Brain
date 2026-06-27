@@ -9,8 +9,12 @@ import type { Config } from '../config/schema.js'
 
 const HOUR = 60 * 60 * 1000
 
+let intervals: NodeJS.Timeout[] = []
+
 export function startScheduler(config: Config): void {
-  setInterval(async () => {
+  stopScheduler()
+
+  const t1 = setInterval(async () => {
     for (const repo of config.repos) {
       try {
         const evicted = evictExpiredTier1()
@@ -23,7 +27,7 @@ export function startScheduler(config: Config): void {
     }
   }, 6 * HOUR)
 
-  setInterval(() => {
+  const t2 = setInterval(() => {
     for (const repo of config.repos) {
       try {
         promoteToTier3(repo.name)
@@ -41,5 +45,13 @@ export function startScheduler(config: Config): void {
     }
   }, 24 * HOUR)
 
+  intervals.push(t1, t2)
   console.info('[brain/scheduler] started — 6h decay cycle, 24h tier promotion')
+}
+
+export function stopScheduler(): void {
+  for (const interval of intervals) {
+    clearInterval(interval)
+  }
+  intervals = []
 }
