@@ -375,4 +375,12 @@ toggleFile();
 
   router.get('/ingest/:owner/:repo', handleIngest)
   router.get('/ingest/github.com/:owner/:repo', handleIngest)
+  router.get('/github.com/:owner/:repo', handleIngest)
+  router.get('/:owner/:repo', (req: Request, res: Response, next) => {
+    const reserved = new Set(['query', 'graph', 'api', 'status', 'ingest'])
+    if (reserved.has(req.params.owner as string)) {
+      return next()
+    }
+    handleIngest(req, res)
+  })
 }

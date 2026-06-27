@@ -13,6 +13,12 @@ export function registerDashboardRoute(router: Router, config: Config): void {
         return
       }
 
+      const matchedRepo = config.repos.find(r => r.name === repo)
+      const remote = matchedRepo?.remote || ''
+      const parts = remote.replace('https://github.com/', '').split('/')
+      const owner = parts[0] || 'brain'
+      const safeOwner = escapeHtml(owner)
+
       const db = getDb()
       const symbolCount = (db.prepare(`SELECT COUNT(DISTINCT symbol_fqn) as c FROM change_events WHERE repo = ?`).get(repo) as { c: number })?.c ?? 0
       const fileCount = (db.prepare(`SELECT COUNT(DISTINCT file_path) as c FROM change_events WHERE repo = ?`).get(repo) as { c: number })?.c ?? 0
@@ -37,66 +43,30 @@ export function registerDashboardRoute(router: Router, config: Config): void {
 <title>Brain Dashboard - ${safeRepo}</title>
 <meta name="description" content="Living codebase memory dashboard — knowledge graph, decay heatmap, hot zone detection, and ripple blast radius visualization for ${safeRepo}">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
   
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
   
   :root {
-    --bg-primary: #0a0e17;
-    --bg-secondary: #111827;
-    --bg-tertiary: #1a2235;
-    --bg-glass: rgba(17, 24, 39, 0.65);
-    --bg-glass-hover: rgba(26, 34, 53, 0.75);
-    --border: rgba(255, 255, 255, 0.08);
-    --border-hover: rgba(255, 255, 255, 0.15);
-    --text-primary: #f1f5f9;
-    --text-secondary: #94a3b8;
-    --text-muted: #64748b;
-    --accent-pink: #f472b6;
-    --accent-rose: #fb7185;
-    --accent-cyan: #22d3ee;
-    --accent-emerald: #34d399;
-    --accent-amber: #fbbf24;
-    --accent-violet: #a78bfa;
-    --glow-pink: 0 0 20px rgba(244, 114, 182, 0.3);
-    --glow-cyan: 0 0 20px rgba(34, 211, 238, 0.3);
-    --glow-emerald: 0 0 20px rgba(52, 211, 153, 0.3);
-    --radius: 16px;
-    --radius-sm: 10px;
-    --radius-xs: 6px;
+    --paper: #fffdf8;
+    --ink: #08090b;
+    --line: #111827;
+    --muted: #596171;
+    --pink: #ff4167;
+    --mint: #64e9a3;
+    --panel: #fff3d6;
+    --field: #e9f1ff;
+    --peach: #ffc174;
+    --shadow: #152033;
   }
   
   body {
     min-height: 100dvh;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-    background: var(--bg-primary);
-    color: var(--text-primary);
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
-  }
-  
-  /* Ambient background glow */
-  body::before {
-    content: '';
-    position: fixed;
-    top: -200px;
-    left: -100px;
-    width: 600px;
-    height: 600px;
-    background: radial-gradient(circle, rgba(244, 114, 182, 0.08) 0%, transparent 70%);
-    pointer-events: none;
-    z-index: 0;
-  }
-  body::after {
-    content: '';
-    position: fixed;
-    bottom: -200px;
-    right: -100px;
-    width: 700px;
-    height: 700px;
-    background: radial-gradient(circle, rgba(34, 211, 238, 0.06) 0%, transparent 70%);
-    pointer-events: none;
-    z-index: 0;
   }
   
   /* === TOPBAR === */
@@ -104,24 +74,23 @@ export function registerDashboardRoute(router: Router, config: Config): void {
     position: sticky;
     top: 0;
     z-index: 100;
-    height: 64px;
+    height: 72px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 clamp(20px, 4vw, 48px);
-    background: rgba(10, 14, 23, 0.8);
-    backdrop-filter: blur(20px) saturate(1.4);
-    border-bottom: 1px solid var(--border);
+    padding: 0 clamp(18px, 5vw, 72px);
+    background: #fffaf0;
+    border-bottom: 3px solid var(--line);
   }
   
   .brand {
-    font-size: 22px;
+    font-size: 28px;
     font-weight: 900;
     letter-spacing: -0.5px;
-    background: linear-gradient(135deg, var(--accent-pink), var(--accent-cyan));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    color: var(--ink);
+  }
+  .brand span {
+    color: var(--pink);
   }
   
   .topbar-meta {
@@ -129,7 +98,7 @@ export function registerDashboardRoute(router: Router, config: Config): void {
     align-items: center;
     gap: 14px;
     font-size: 13px;
-    color: var(--text-secondary);
+    color: var(--ink);
   }
   
   .live-dot {
@@ -139,8 +108,8 @@ export function registerDashboardRoute(router: Router, config: Config): void {
     padding: 4px 12px;
     border-radius: 999px;
     background: rgba(52, 211, 153, 0.12);
-    border: 1px solid rgba(52, 211, 153, 0.25);
-    color: var(--accent-emerald);
+    border: 2px solid var(--line);
+    color: var(--ink);
     font-weight: 700;
     font-size: 11px;
     text-transform: uppercase;
@@ -151,82 +120,64 @@ export function registerDashboardRoute(router: Router, config: Config): void {
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: var(--accent-emerald);
+    background: var(--mint);
     animation: livePulse 2s ease-in-out infinite;
   }
   @keyframes livePulse {
-    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
-    50% { opacity: 0.6; box-shadow: 0 0 0 6px rgba(52, 211, 153, 0); }
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(100, 233, 163, 0.5); }
+    50% { opacity: 0.6; box-shadow: 0 0 0 6px rgba(100, 233, 163, 0); }
   }
   
   /* === MAIN LAYOUT === */
   main {
     position: relative;
     z-index: 1;
-    width: min(1440px, calc(100% - 40px));
+    width: min(1200px, calc(100% - 32px));
     margin: 0 auto;
-    padding: 32px 0 60px;
+    padding: 40px 0 60px;
   }
   
   /* === STATS GRID === */
   .stats {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 12px;
     margin-bottom: 28px;
   }
   
   .stat-card {
-    position: relative;
-    padding: 18px 16px;
-    border-radius: var(--radius-sm);
-    background: var(--bg-glass);
-    backdrop-filter: blur(12px);
-    border: 1px solid var(--border);
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    overflow: hidden;
-  }
-  .stat-card::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    background: linear-gradient(135deg, rgba(255,255,255,0.03), transparent);
-    pointer-events: none;
+    border: 3px solid var(--line);
+    border-radius: 6px;
+    background: #fffaf0;
+    padding: 16px;
+    box-shadow: 4px 4px 0 var(--shadow);
+    transition: all 0.2s ease;
   }
   .stat-card:hover {
-    border-color: var(--border-hover);
-    transform: translateY(-2px);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    transform: translate(-3px, -3px);
+    box-shadow: 7px 7px 0 var(--shadow);
   }
   
   .stat-value {
-    font-size: 28px;
-    font-weight: 800;
-    font-variant-numeric: tabular-nums;
+    font-size: 30px;
+    font-weight: 950;
     line-height: 1;
-    background: linear-gradient(135deg, var(--accent-pink), var(--accent-cyan));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    color: var(--pink);
+    font-variant-numeric: tabular-nums;
   }
   .stat-value.emerald {
-    background: linear-gradient(135deg, var(--accent-emerald), var(--accent-cyan));
-    -webkit-background-clip: text;
-    background-clip: text;
+    color: var(--mint);
   }
   .stat-value.amber {
-    background: linear-gradient(135deg, var(--accent-amber), var(--accent-rose));
-    -webkit-background-clip: text;
-    background-clip: text;
+    color: var(--peach);
   }
   .stat-label {
     margin-top: 8px;
     font-size: 11px;
-    font-weight: 700;
+    font-weight: 850;
     text-transform: uppercase;
     letter-spacing: 0.8px;
-    color: var(--text-muted);
+    color: var(--muted);
   }
   
   /* === GRAPH SECTION === */
@@ -240,14 +191,14 @@ export function registerDashboardRoute(router: Router, config: Config): void {
     margin-bottom: 14px;
   }
   .section-title {
-    font-size: 18px;
-    font-weight: 800;
+    font-size: 20px;
+    font-weight: 950;
     letter-spacing: -0.3px;
   }
   .section-meta {
     font-size: 12px;
-    color: var(--text-muted);
-    font-weight: 600;
+    color: var(--muted);
+    font-weight: 750;
   }
   
   .graph-container {
@@ -260,14 +211,18 @@ export function registerDashboardRoute(router: Router, config: Config): void {
   #graph-canvas {
     width: 100%;
     height: 560px;
-    border-radius: var(--radius);
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #fffaf0;
+    border: 3px solid var(--line);
+    box-shadow: 4px 4px 0 var(--shadow);
     cursor: default;
     display: block;
-    transition: border-color 0.3s;
+    transition: all 0.2s ease;
   }
-  #graph-canvas:hover { border-color: var(--border-hover); }
+  #graph-canvas:hover {
+    transform: translate(-2px, -2px);
+    box-shadow: 6px 6px 0 var(--shadow);
+  }
   
   /* === LEGEND === */
   .legend {
@@ -276,8 +231,8 @@ export function registerDashboardRoute(router: Router, config: Config): void {
     gap: 10px 20px;
     margin-top: 12px;
     font-size: 12px;
-    color: var(--text-muted);
-    font-weight: 600;
+    color: var(--muted);
+    font-weight: 800;
   }
   .legend-item {
     display: inline-flex;
@@ -285,97 +240,101 @@ export function registerDashboardRoute(router: Router, config: Config): void {
     gap: 6px;
   }
   .legend-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    border: 1.5px solid rgba(255,255,255,0.2);
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--line);
+    display: inline-block;
   }
-  .legend-dot.file { background: var(--accent-pink); }
-  .legend-dot.symbol { background: var(--accent-emerald); }
-  .legend-dot.hot { background: var(--accent-amber); animation: hotPulse 1.5s ease-in-out infinite; }
+  .legend-dot.file { background: var(--pink); }
+  .legend-dot.symbol { background: var(--mint); }
+  .legend-dot.hot { background: var(--peach); }
   .legend-dot.decayed { background: #ef4444; }
   .legend-line {
-    width: 16px;
-    height: 2px;
-    background: rgba(255,255,255,0.3);
+    width: 18px;
+    height: 3px;
+    background: var(--line);
   }
   .legend-line.ripple {
-    background: var(--accent-cyan);
-    box-shadow: 0 0 6px var(--accent-cyan);
+    background: var(--pink);
   }
   
   /* === INSPECTOR === */
   .inspector {
     min-height: 560px;
-    border-radius: var(--radius);
-    background: var(--bg-glass);
-    backdrop-filter: blur(12px);
-    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    border: 4px solid var(--line);
     padding: 22px;
     display: flex;
     flex-direction: column;
     gap: 16px;
-    transition: border-color 0.3s;
+    box-shadow: 6px 6px 0 var(--shadow);
+    transition: all 0.2s ease;
     overflow: hidden;
   }
-  .inspector:hover { border-color: var(--border-hover); }
+  .inspector:hover {
+    transform: translate(-2px, -2px);
+    box-shadow: 8px 8px 0 var(--shadow);
+  }
   
   .inspector-title {
-    font-size: 17px;
-    font-weight: 800;
+    font-size: 20px;
+    font-weight: 900;
     overflow-wrap: anywhere;
     line-height: 1.2;
   }
   .inspector-fqn {
     font-family: 'JetBrains Mono', monospace;
     font-size: 11px;
-    color: var(--text-muted);
+    color: var(--muted);
     overflow-wrap: anywhere;
     margin-top: 4px;
+    font-weight: 700;
   }
   
   .pill-row { display: flex; flex-wrap: wrap; gap: 6px; }
   .pill {
-    padding: 3px 10px;
+    padding: 4px 10px;
     border-radius: 999px;
-    font-size: 10px;
-    font-weight: 700;
+    font-size: 11px;
+    font-weight: 850;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border: 1px solid var(--border);
-    background: rgba(255,255,255,0.04);
-    color: var(--text-secondary);
+    border: 2px solid var(--line);
+    background: var(--field);
+    color: var(--ink);
   }
-  .pill.hot { background: rgba(251, 191, 36, 0.15); border-color: rgba(251, 191, 36, 0.3); color: var(--accent-amber); }
-  .pill.dead { background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.3); color: #ef4444; }
-  .pill.fresh { background: rgba(52, 211, 153, 0.15); border-color: rgba(52, 211, 153, 0.3); color: var(--accent-emerald); }
+  .pill.hot { background: var(--pink); color: #fff; }
+  .pill.dead { background: var(--peach); }
+  .pill.fresh { background: var(--mint); }
   
   .decay-bar {
-    height: 6px;
-    border-radius: 3px;
-    background: var(--bg-tertiary);
+    height: 12px;
+    border-radius: 6px;
+    border: 2px solid var(--line);
+    background: #fff;
     overflow: hidden;
     position: relative;
   }
   .decay-bar-fill {
     height: 100%;
-    border-radius: 3px;
-    transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: width 0.5s ease;
   }
   .decay-label {
     display: flex;
     justify-content: space-between;
     font-size: 11px;
-    color: var(--text-muted);
+    color: var(--muted);
     margin-bottom: 4px;
-    font-weight: 600;
+    font-weight: 850;
+    text-transform: uppercase;
   }
   
   .inspector-summary {
-    color: var(--text-secondary);
-    font-size: 13px;
-    line-height: 1.6;
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.5;
     flex: 1;
+    font-weight: 600;
   }
   
   .neighbor-list {
@@ -383,15 +342,13 @@ export function registerDashboardRoute(router: Router, config: Config): void {
     gap: 6px;
     max-height: 200px;
     overflow-y: auto;
-    scrollbar-width: thin;
-    scrollbar-color: var(--bg-tertiary) transparent;
   }
   .neighbor-item {
     padding: 6px 0;
-    border-top: 1px solid var(--border);
-    font-size: 11px;
-    color: var(--text-muted);
-    font-weight: 600;
+    border-top: 1px solid rgba(17, 24, 39, 0.15);
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: 700;
     overflow-wrap: anywhere;
     font-family: 'JetBrains Mono', monospace;
   }
@@ -399,34 +356,40 @@ export function registerDashboardRoute(router: Router, config: Config): void {
   .ripple-btn {
     width: 100%;
     padding: 10px;
-    border: 1px solid rgba(34, 211, 238, 0.3);
-    border-radius: var(--radius-xs);
-    background: rgba(34, 211, 238, 0.08);
-    color: var(--accent-cyan);
+    border: 3px solid var(--line);
+    border-radius: 4px;
+    background: var(--peach);
+    color: var(--ink);
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 850;
     cursor: pointer;
-    transition: all 0.2s;
+    box-shadow: 2px 2px 0 var(--shadow);
+    transition: all 0.15s ease;
     font-family: inherit;
   }
   .ripple-btn:hover {
-    background: rgba(34, 211, 238, 0.15);
-    border-color: rgba(34, 211, 238, 0.5);
-    box-shadow: var(--glow-cyan);
+    transform: translate(-1px, -1px);
+    box-shadow: 3px 3px 0 var(--shadow);
+  }
+  .ripple-btn:active {
+    transform: translate(1px, 1px);
+    box-shadow: 1px 1px 0 var(--shadow);
   }
   .ripple-btn:disabled {
     opacity: 0.4;
     cursor: default;
+    transform: none;
+    box-shadow: none;
   }
   
   /* === QUERY PANEL === */
   .query-panel {
-    border-radius: var(--radius);
-    background: var(--bg-glass);
-    backdrop-filter: blur(12px);
-    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    border: 4px solid var(--line);
     padding: 22px;
     margin-bottom: 28px;
+    box-shadow: 10px 10px 0 var(--shadow);
   }
   .query-row {
     display: grid;
@@ -436,66 +399,81 @@ export function registerDashboardRoute(router: Router, config: Config): void {
   }
   textarea {
     width: 100%;
-    min-height: 64px;
+    min-height: 74px;
     resize: vertical;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-xs);
-    background: var(--bg-secondary);
-    color: var(--text-primary);
-    padding: 14px 16px;
-    font: 500 14px/1.5 'JetBrains Mono', monospace;
-    transition: all 0.2s;
-  }
-  textarea::placeholder { color: var(--text-muted); }
-  textarea:focus {
+    border: 3px solid var(--line);
+    border-radius: 4px;
+    background: var(--field);
+    color: var(--ink);
+    padding: 18px 20px;
+    font: 700 16px/1.4 'JetBrains Mono', monospace;
+    box-shadow: 4px 4px 0 var(--shadow);
     outline: none;
-    border-color: var(--accent-pink);
-    box-shadow: 0 0 0 3px rgba(244, 114, 182, 0.1);
+    transition: all 0.15s ease;
+  }
+  textarea::placeholder { color: var(--muted); }
+  textarea:focus {
+    border-color: var(--pink);
+    transform: translate(-1px, -1px);
+    box-shadow: 5px 5px 0 var(--shadow);
   }
   
-  .ask-btn {
-    min-width: 100px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-xs);
-    background: linear-gradient(135deg, var(--accent-pink), var(--accent-violet));
-    color: #fff;
-    font-size: 14px;
-    font-weight: 700;
+  button, .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 48px;
+    padding: 0 24px;
+    border: 4px solid var(--line);
+    border-radius: 6px;
+    font-size: 16px;
+    font-weight: 850;
     cursor: pointer;
-    transition: all 0.25s;
+    text-decoration: none;
+    color: var(--ink);
+    background: var(--peach);
+    box-shadow: 4px 4px 0 var(--shadow);
+    transition: all 0.15s ease;
     font-family: inherit;
   }
-  .ask-btn:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 20px rgba(244, 114, 182, 0.3);
+  button:hover, .btn:hover {
+    transform: translate(-2px, -2px);
+    box-shadow: 6px 6px 0 var(--shadow);
   }
-  .ask-btn:active { transform: translateY(0); }
+  button:active, .btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: 2px 2px 0 var(--shadow);
+  }
+  .btn.secondary {
+    background: var(--field);
+  }
   
   #chat-output {
     margin-top: 14px;
-    padding: 16px;
-    border-radius: var(--radius-xs);
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    color: var(--text-secondary);
+    padding: 20px;
+    border-radius: 6px;
+    background: #fffaf0;
+    border: 3px solid var(--line);
+    color: var(--ink);
     font-size: 14px;
-    line-height: 1.6;
+    line-height: 1.5;
     min-height: 60px;
     overflow-x: auto;
+    box-shadow: 4px 4px 0 var(--shadow);
   }
   #chat-output pre {
-    background: var(--bg-primary);
-    color: var(--text-primary);
+    background: #1a202c;
+    color: #f7fafc;
     padding: 14px;
-    border-radius: var(--radius-xs);
-    margin: 10px 0;
+    border-radius: 4px;
+    margin: 12px 0;
     overflow-x: auto;
-    border: 1px solid var(--border);
+    border: 2px solid var(--line);
   }
   #chat-output code {
     font-family: 'JetBrains Mono', monospace;
     font-size: 13px;
-    font-weight: 500;
+    font-weight: 700;
   }
   #chat-output p { margin-bottom: 8px; }
   #chat-output ul, #chat-output ol { padding-left: 20px; margin-bottom: 8px; }
@@ -517,167 +495,165 @@ export function registerDashboardRoute(router: Router, config: Config): void {
   .grid-full { grid-column: 1 / -1; }
   
   .panel {
-    border-radius: var(--radius);
-    background: var(--bg-glass);
-    backdrop-filter: blur(12px);
-    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    border: 4px solid var(--line);
     padding: 22px;
-    transition: border-color 0.3s;
+    box-shadow: 6px 6px 0 var(--shadow);
+    transition: all 0.2s ease;
   }
-  .panel:hover { border-color: var(--border-hover); }
+  .panel:hover {
+    transform: translate(-2px, -2px);
+    box-shadow: 8px 8px 0 var(--shadow);
+  }
   .panel h2 {
-    font-size: 16px;
-    font-weight: 800;
-    margin-bottom: 14px;
-    letter-spacing: -0.3px;
+    font-size: 18px;
+    font-weight: 900;
+    margin-bottom: 12px;
+    border-bottom: 2px solid var(--line);
+    padding-bottom: 6px;
+    color: var(--ink);
   }
   
   .filter-input {
     width: 100%;
     margin-bottom: 12px;
     padding: 8px 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-xs);
-    background: var(--bg-secondary);
-    color: var(--text-primary);
-    font-size: 12px;
-    font-weight: 600;
+    border: 3px solid var(--line);
+    border-radius: 4px;
+    background: #fff;
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 700;
     font-family: inherit;
-    transition: border-color 0.2s;
+    outline: none;
   }
-  .filter-input:focus { outline: none; border-color: var(--accent-pink); }
-  .filter-input::placeholder { color: var(--text-muted); }
+  .filter-input:focus { border-color: var(--pink); }
+  .filter-input::placeholder { color: var(--muted); }
   
   /* === TABLE === */
   table {
     width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
+    background: #fffaf0;
+    border: 3px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 4px 4px 0 var(--shadow);
   }
   th {
+    background: var(--field);
+    color: var(--ink);
     text-align: left;
-    padding: 8px 10px;
-    font-size: 10px;
-    font-weight: 800;
+    padding: 10px 12px;
+    font-size: 11px;
+    font-weight: 900;
     text-transform: uppercase;
-    letter-spacing: 0.8px;
-    color: var(--text-muted);
-    border-bottom: 1px solid var(--border);
+    border-bottom: 3px solid var(--line);
   }
   td {
-    padding: 8px 10px;
-    border-top: 1px solid rgba(255,255,255,0.03);
+    padding: 10px 12px;
+    border-top: 1px solid rgba(17, 24, 39, 0.15);
     font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--ink);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  tr:hover td { background: rgba(255,255,255,0.02); }
+  tr:hover td { background: rgba(17, 24, 39, 0.02); }
   
   /* === LISTS === */
-  ul { list-style: none; display: grid; gap: 8px; }
+  ul { list-style: none; display: grid; gap: 10px; }
   li {
-    padding: 12px 14px;
-    border-radius: var(--radius-xs);
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
+    padding: 12px;
+    border-radius: 6px;
+    background: #fffaf0;
+    border: 3px solid var(--line);
     font-size: 13px;
-    color: var(--text-secondary);
-    transition: all 0.2s;
+    color: var(--ink);
+    box-shadow: 4px 4px 0 var(--shadow);
+    transition: all 0.2s ease;
   }
   li:hover {
-    border-color: var(--border-hover);
-    transform: translateX(4px);
+    transform: translate(-2px, -2px);
+    box-shadow: 6px 6px 0 var(--shadow);
   }
   li strong {
     display: block;
-    margin-bottom: 4px;
-    font-weight: 700;
-    color: var(--accent-pink);
-    font-size: 12px;
+    margin-bottom: 5px;
+    font-weight: 900;
+    color: var(--pink);
   }
   
   /* === DEAD CODE / IMPACT === */
   .dead-list {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 10px;
+    gap: 12px;
   }
   .dead-item {
     padding: 14px;
-    border-radius: var(--radius-xs);
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #fffaf0;
+    border: 3px solid var(--line);
     display: grid;
     gap: 6px;
     cursor: pointer;
-    transition: all 0.2s;
+    box-shadow: 4px 4px 0 var(--shadow);
+    transition: all 0.2s ease;
   }
   .dead-item:hover {
-    border-color: var(--border-hover);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    transform: translate(-3px, -3px);
+    box-shadow: 7px 7px 0 var(--shadow);
   }
-  .dead-item strong { color: var(--text-primary); font-size: 13px; font-weight: 700; }
+  .dead-item strong { color: var(--ink); font-size: 13px; font-weight: 900; }
   .dead-item code {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    color: var(--text-muted);
+    font-size: 12px;
+    color: var(--muted);
     overflow-wrap: anywhere;
+    font-weight: 700;
   }
-  .dead-item small { color: var(--text-muted); line-height: 1.4; font-size: 11px; }
+  .dead-item small { color: var(--muted); line-height: 1.4; font-size: 11px; font-weight: 700; }
   
   .empty-state {
-    padding: 20px;
-    border-radius: var(--radius-xs);
-    background: var(--bg-secondary);
-    border: 1px dashed var(--border);
-    color: var(--text-muted);
-    font-size: 13px;
-    text-align: center;
+    padding: 14px;
+    border-radius: 6px;
+    background: #fffaf0;
+    border: 3px solid var(--line);
+    color: var(--muted);
+    font-size: 14px;
+    box-shadow: 4px 4px 0 var(--shadow);
   }
   
   .foot {
-    margin-top: 48px;
+    margin-top: 40px;
     text-align: center;
-    color: var(--text-muted);
-    font-size: 13px;
-    font-weight: 600;
+    color: var(--muted);
+    font-size: 14px;
+    font-weight: 700;
   }
-  .foot a { color: var(--accent-pink); text-decoration: none; font-weight: 700; }
-  .foot a:hover { text-decoration: underline; }
   
   /* === D3 GRAPH STYLES === */
   .node-circle { cursor: pointer; transition: opacity 0.2s; }
-  .node-circle:hover { filter: brightness(1.3); }
-  
-  @keyframes hotPulse {
-    0%, 100% { r: inherit; opacity: 1; }
-    50% { opacity: 0.5; }
-  }
+  .node-circle:hover { filter: brightness(1.1); }
   
   .edge-line { pointer-events: none; }
-  .edge-line.ripple-active {
-    animation: rippleFlow 1s ease-in-out infinite;
-  }
-  @keyframes rippleFlow {
-    0% { stroke-dashoffset: 20; }
-    100% { stroke-dashoffset: 0; }
-  }
-
+  
   /* === TEMPORAL TIMELINE SIMULATOR === */
   .timeline-control-container {
     margin-top: 18px;
     padding: 16px 20px;
-    border-radius: var(--radius-sm);
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    border: 3px solid var(--line);
     display: flex;
     flex-direction: column;
     gap: 8px;
+    box-shadow: 4px 4px 0 var(--shadow);
   }
   .timeline-label-row {
     display: flex;
@@ -689,49 +665,51 @@ export function registerDashboardRoute(router: Router, config: Config): void {
     font-weight: 850;
     text-transform: uppercase;
     letter-spacing: 0.8px;
-    color: var(--accent-cyan);
+    color: var(--pink);
   }
   .timeline-days {
     font-family: 'JetBrains Mono', monospace;
     font-size: 11px;
-    color: var(--text-secondary);
-    font-weight: 700;
+    color: var(--ink);
+    font-weight: 800;
   }
   .timeline-slider {
     -webkit-appearance: none;
     appearance: none;
     width: 100%;
-    height: 6px;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.1);
+    height: 12px;
+    border-radius: 6px;
+    background: #fff;
+    border: 3px solid var(--line);
     outline: none;
   }
   .timeline-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 16px;
-    height: 16px;
+    width: 20px;
+    height: 20px;
     border-radius: 50%;
-    background: var(--accent-cyan);
+    background: var(--peach);
+    border: 3px solid var(--line);
     cursor: pointer;
-    box-shadow: var(--glow-cyan);
+    box-shadow: 2px 2px 0 var(--shadow);
     transition: transform 0.1s;
   }
   .timeline-slider::-webkit-slider-thumb:hover {
-    transform: scale(1.2);
+    transform: scale(1.15);
   }
   .timeline-slider::-moz-range-thumb {
-    width: 16px;
-    height: 16px;
+    width: 20px;
+    height: 20px;
     border-radius: 50%;
-    background: var(--accent-cyan);
+    background: var(--peach);
+    border: 3px solid var(--line);
     cursor: pointer;
-    box-shadow: var(--glow-cyan);
-    border: none;
+    box-shadow: 2px 2px 0 var(--shadow);
     transition: transform 0.1s;
   }
   .timeline-slider::-moz-range-thumb:hover {
-    transform: scale(1.2);
+    transform: scale(1.15);
   }
   
   /* === RESPONSIVE === */
@@ -748,10 +726,11 @@ export function registerDashboardRoute(router: Router, config: Config): void {
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">Brain</div>
+  <div class="brand">Br<span>ain</span></div>
   <div class="topbar-meta">
+    <a href="/ingest/${safeOwner}/${safeRepo}" class="btn" style="height: 38px; padding: 0 16px; font-size: 13px; border-width: 3px; box-shadow: 2px 2px 0 var(--shadow); background: var(--mint); display: inline-flex; align-items: center; justify-content: center; text-decoration: none; color: var(--ink); font-weight: 850;">Ingest Prompt Dump</a>
     <span class="live-dot">Live</span>
-    <span style="font-weight: 700; color: var(--text-primary);">${safeRepo}</span>
+    <span style="font-weight: 700; color: var(--ink);">${safeRepo}</span>
     <span>${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
   </div>
 </header>
@@ -797,13 +776,13 @@ export function registerDashboardRoute(router: Router, config: Config): void {
       <span class="legend-item"><i class="legend-dot decayed"></i>Decayed</span>
       <span class="legend-item"><i class="legend-line"></i>Calls / Contains</span>
       <span class="legend-item"><i class="legend-line ripple"></i>Ripple Path</span>
-      <span style="margin-left: auto; font-size: 11px;">💡 Drag nodes · Scroll zoom · Double-click reset</span>
+      <span style="margin-left: auto; font-size: 11px;">Drag nodes · Scroll zoom · Double-click reset</span>
     </div>
 
     <!-- Timeline Scrubber Simulator -->
     <div class="timeline-control-container">
       <div class="timeline-label-row">
-        <span class="timeline-title">🕒 Temporal Memory Decay Simulator</span>
+        <span class="timeline-title">Temporal Memory Decay Simulator</span>
         <span id="timeline-days-display" class="timeline-days">Current Memory (0 days in future)</span>
       </div>
       <input type="range" id="timeline-slider" min="0" max="90" value="0" step="1" class="timeline-slider" oninput="scrubTimeline(this.value)">
@@ -822,7 +801,7 @@ export function registerDashboardRoute(router: Router, config: Config): void {
   <!-- Two-column grid: Hot Zones + Episodes -->
   <div class="grid-2col">
     <section class="panel">
-      <h2>🔥 Hot Zones</h2>
+      <h2>Hot Zones</h2>
       <input type="text" class="filter-input" placeholder="Search hot zones..." oninput="filterTable('hotzones-table', this.value)">
       ${hotzones.length > 0
         ? '<table id="hotzones-table"><thead><tr><th>Symbol</th><th>File</th><th>Z-Score</th><th>Velocity</th></tr></thead><tbody>' + hotzoneRows + '</tbody></table>'
@@ -830,24 +809,24 @@ export function registerDashboardRoute(router: Router, config: Config): void {
     </section>
 
     <section class="panel">
-      <h2>📝 Recent Episodes</h2>
+      <h2>Recent Episodes</h2>
       <input type="text" class="filter-input" placeholder="Search episodes..." oninput="filterList('episodes-list', this.value)">
       ${episodes.length > 0 ? '<ul id="episodes-list">' + episodeRows + '</ul>' : '<p class="empty-state">No episodes yet. Run scan or receive webhook events.</p>'}
     </section>
 
     <section class="panel grid-full">
-      <h2>⚡ Pending Changes Impact</h2>
+      <h2>Pending Changes Impact</h2>
       <div id="diff-impact-list" class="dead-list"><p class="empty-state">Loading local diff impact...</p></div>
     </section>
 
     <section class="panel grid-full">
-      <h2>💀 Dead Code Candidates</h2>
+      <h2>Dead Code Candidates</h2>
       <input type="text" class="filter-input" placeholder="Search dead code candidates..." oninput="filterDeadCode(this.value)">
       <div id="dead-code-list" class="dead-list"><p class="empty-state">Loading candidates...</p></div>
     </section>
   </div>
 
-  <p class="foot">Brain — Living Codebase Memory · <a href="/ingest/brain/brain">Ingest Prompt Dump</a></p>
+  <p class="foot">Living Codebase Brain Dashboard</p>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
@@ -861,17 +840,17 @@ let selectedNodeId = null;
 let simulation = null;
 let currentRippleSet = null;
 
-// === DECAY COLOR SCALE ===
+// === DECAY COLOR SCALE (Light Theme Harmonized) ===
 function decayColor(score) {
-  if (score == null || isNaN(score)) return '#34d399'; // default emerald
+  if (score == null || isNaN(score)) return '#64e9a3'; // default mint
   const s = Math.max(0, Math.min(1, score));
   // green (fresh=1) → amber (0.5) → red (decayed=0)
   if (s > 0.6) {
     const t = (s - 0.6) / 0.4;
-    return d3.interpolateRgb('#fbbf24', '#34d399')(t);
+    return d3.interpolateRgb('#ffc174', '#64e9a3')(t);
   } else {
     const t = s / 0.6;
-    return d3.interpolateRgb('#ef4444', '#fbbf24')(t);
+    return d3.interpolateRgb('#ff8b8b', '#ffc174')(t);
   }
 }
 
@@ -936,19 +915,6 @@ function renderD3Graph(data) {
     degree.set(typeof e.target === 'string' ? e.target : e.target.id, (degree.get(typeof e.target === 'string' ? e.target : e.target.id) || 0) + 1);
   }
 
-  // Defs for glow filters and gradients
-  const defs = svg.append('defs');
-
-  // Glow filter for hot zones
-  const hotGlow = defs.append('filter').attr('id', 'glow-hot').attr('x', '-50%').attr('y', '-50%').attr('width', '200%').attr('height', '200%');
-  hotGlow.append('feGaussianBlur').attr('stdDeviation', '4').attr('result', 'blur');
-  hotGlow.append('feMerge').selectAll('feMergeNode').data(['blur', 'SourceGraphic']).join('feMergeNode').attr('in', d => d);
-
-  // Glow filter for ripple
-  const rippleGlow = defs.append('filter').attr('id', 'glow-ripple').attr('x', '-50%').attr('y', '-50%').attr('width', '200%').attr('height', '200%');
-  rippleGlow.append('feGaussianBlur').attr('stdDeviation', '3').attr('result', 'blur');
-  rippleGlow.append('feMerge').selectAll('feMergeNode').data(['blur', 'SourceGraphic']).join('feMergeNode').attr('in', d => d);
-
   // Zoom & Pan
   const g = svg.append('g');
   const zoom = d3.zoom()
@@ -963,8 +929,8 @@ function renderD3Graph(data) {
     .data(edges)
     .join('line')
     .attr('class', 'edge-line')
-    .attr('stroke', d => d.type === 'calls' ? 'rgba(148, 163, 184, 0.2)' : 'rgba(100, 116, 139, 0.08)')
-    .attr('stroke-width', d => d.type === 'calls' ? 1.2 : 0.6);
+    .attr('stroke', d => d.type === 'calls' ? 'rgba(17, 24, 39, 0.45)' : 'rgba(17, 24, 39, 0.15)')
+    .attr('stroke-width', d => d.type === 'calls' ? 1.5 : 0.8);
 
   // Node layer
   const nodeLayer = g.append('g').attr('class', 'nodes');
@@ -977,7 +943,7 @@ function renderD3Graph(data) {
     .data(hotNodes)
     .join('circle')
     .attr('fill', 'none')
-    .attr('stroke', 'rgba(251, 191, 36, 0.4)')
+    .attr('stroke', 'var(--pink)')
     .attr('stroke-width', 2);
 
   // Animate pulsing rings
@@ -1000,8 +966,8 @@ function renderD3Graph(data) {
   }
 
   function nodeColor(d) {
-    if (d.type === 'file') return '#f472b6';
-    if (d.isHotZone) return '#fbbf24';
+    if (d.type === 'file') return 'var(--pink)';
+    if (d.isHotZone) return 'var(--peach)';
     return decayColor(d.decayScore);
   }
 
@@ -1021,9 +987,8 @@ function renderD3Graph(data) {
   node.append('circle')
     .attr('r', d => nodeRadius(d))
     .attr('fill', d => nodeColor(d))
-    .attr('stroke', d => d.isHotZone ? 'rgba(251, 191, 36, 0.6)' : 'rgba(255, 255, 255, 0.15)')
-    .attr('stroke-width', d => d.type === 'file' ? 2.5 : 1.5)
-    .attr('filter', d => d.isHotZone ? 'url(#glow-hot)' : null);
+    .attr('stroke', 'var(--line)')
+    .attr('stroke-width', d => d.type === 'file' ? 2.5 : 1.5);
 
   node.append('title')
     .text(d => (d.file || d.label) + (d.kind ? ' · ' + d.kind : '') + (d.decayScore != null ? ' · decay: ' + d.decayScore.toFixed(2) : ''));
@@ -1036,7 +1001,7 @@ function renderD3Graph(data) {
     .attr('dy', 4)
     .attr('font-size', '10px')
     .attr('font-weight', '700')
-    .attr('fill', 'rgba(241, 245, 249, 0.7)')
+    .attr('fill', 'var(--line)')
     .text(d => d.label ? d.label.slice(0, 20) : '');
 
   // Simulation
@@ -1150,29 +1115,26 @@ function highlightSelection(id) {
     const tgt = typeof d.target === 'object' ? d.target.id : d.target;
     const isIncident = src === id || tgt === id;
     d3.select(this)
-      .attr('stroke', isIncident ? (currentRippleSet ? '#22d3ee' : '#f472b6') : 'rgba(100,116,139,0.05)')
-      .attr('stroke-width', isIncident ? 2 : 0.5)
-      .attr('opacity', isIncident ? 0.8 : 0.08);
+      .attr('stroke', isIncident ? (currentRippleSet ? 'var(--pink)' : 'var(--line)') : 'rgba(17, 24, 39, 0.05)')
+      .attr('stroke-width', isIncident ? 2.5 : 0.5)
+      .attr('opacity', isIncident ? 0.95 : 0.05);
   });
 
   // Highlight selected node
   d3.selectAll('.node-circle').select('circle')
-    .attr('stroke', d => d.id === id ? '#fff' : (d.isHotZone ? 'rgba(251,191,36,0.6)' : 'rgba(255,255,255,0.15)'))
-    .attr('stroke-width', d => d.id === id ? 3 : (d.type === 'file' ? 2.5 : 1.5));
+    .attr('stroke', d => d.id === id ? 'var(--pink)' : 'var(--line)')
+    .attr('stroke-width', d => d.id === id ? 3 : 1.5);
 }
 
 function resetHighlighting() {
   d3.selectAll('.node-circle').attr('opacity', 1);
   d3.selectAll('.node-circle').select('circle')
-    .attr('stroke', d => d.isHotZone ? 'rgba(251,191,36,0.6)' : 'rgba(255,255,255,0.15)')
+    .attr('stroke', 'var(--line)')
     .attr('stroke-width', d => d.type === 'file' ? 2.5 : 1.5);
   d3.selectAll('.edge-line')
-    .attr('stroke', d => d.type === 'calls' ? 'rgba(148,163,184,0.2)' : 'rgba(100,116,139,0.08)')
-    .attr('stroke-width', d => d.type === 'calls' ? 1.2 : 0.6)
-    .attr('opacity', 1)
-    .classed('ripple-active', false)
-    .attr('stroke-dasharray', null)
-    .attr('filter', null);
+    .attr('stroke', d => d.type === 'calls' ? 'rgba(17, 24, 39, 0.45)' : 'rgba(17, 24, 39, 0.15)')
+    .attr('stroke-width', d => d.type === 'calls' ? 1.5 : 0.8)
+    .attr('opacity', 1);
 }
 
 function resetInspector() {
@@ -1202,7 +1164,7 @@ function updateInspector(node, edges, summary, connected, deadCode) {
   const pillRow = document.createElement('div');
   pillRow.className = 'pill-row';
   const labels = [node.type, node.kind, node.exported ? 'exported' : null, edges.length + ' edges'];
-  if (node.isHotZone) labels.push('🔥 hot zone');
+  if (node.isHotZone) labels.push('hot zone');
   for (const label of labels.filter(Boolean)) {
     const pill = document.createElement('span');
     pill.className = 'pill' + (label.includes('hot') ? ' hot' : '') + (deadCode ? ' dead' : '');
@@ -1223,7 +1185,7 @@ function updateInspector(node, edges, summary, connected, deadCode) {
     const fill = document.createElement('div');
     fill.className = 'decay-bar-fill';
     fill.style.width = (node.decayScore * 100) + '%';
-    fill.style.background = 'linear-gradient(90deg, #ef4444, #fbbf24, #34d399)';
+    fill.style.background = 'linear-gradient(90deg, #ff8b8b, #ffc174, #64e9a3)';
     bar.appendChild(fill);
     decayWrap.append(labelRow, bar);
     inspector.appendChild(decayWrap);
@@ -1239,7 +1201,7 @@ function updateInspector(node, edges, summary, connected, deadCode) {
   if (node.type === 'symbol') {
     const btn = document.createElement('button');
     btn.className = 'ripple-btn';
-    btn.textContent = '⚡ Compute Blast Radius';
+    btn.textContent = 'Compute Blast Radius';
     btn.onclick = () => computeRipple(node.id, btn);
     inspector.appendChild(btn);
   }
@@ -1278,22 +1240,22 @@ function renderCoChangesInInspector(predictions) {
 
   const header = document.createElement('div');
   header.style.fontWeight = '800';
-  header.style.color = 'var(--accent-pink)';
+  header.style.color = 'var(--pink)';
   header.style.fontSize = '11px';
   header.style.textTransform = 'uppercase';
   header.style.letterSpacing = '0.5px';
   header.style.marginBottom = '6px';
-  header.textContent = '🔮 Predicted Co-Changes';
+  header.textContent = 'Predicted Co-Changes';
   container.appendChild(header);
 
   for (const pred of predictions) {
     const item = document.createElement('div');
     item.className = 'neighbor-item';
-    item.style.color = 'var(--text-secondary)';
+    item.style.color = 'var(--muted)';
     
     const targetLabel = pred.target.split('/').pop().split(':').pop();
-    item.innerHTML = '👉 <span style="color: var(--text-primary); font-weight: 700;">' + targetLabel + '</span> ' +
-      '<span style="color: var(--text-muted);">(' + pred.coOccurrences + ' commits, ' + (pred.confidence * 100).toFixed(0) + '% confidence)</span>';
+    item.innerHTML = '→ <span style="color: var(--ink); font-weight: 700;">' + targetLabel + '</span> ' +
+      '<span style="color: var(--muted);">(' + pred.coOccurrences + ' commits, ' + (pred.confidence * 100).toFixed(0) + '% confidence)</span>';
     item.title = pred.target;
     item.style.cursor = 'pointer';
     item.onclick = () => selectNode(pred.target);
@@ -1304,7 +1266,7 @@ function renderCoChangesInInspector(predictions) {
 // === RIPPLE BLAST RADIUS ===
 async function computeRipple(fqn, btn) {
   btn.disabled = true;
-  btn.textContent = '⚡ Computing...';
+  btn.textContent = 'Computing...';
   try {
     const r = await fetch('/api/ripple?fqn=' + encodeURIComponent(fqn));
     const data = await r.json();
@@ -1317,28 +1279,23 @@ async function computeRipple(fqn, btn) {
     // Highlight impacted nodes
     d3.selectAll('.node-circle').attr('opacity', d => impactedFqns.has(d.id) ? 1 : 0.08);
     d3.selectAll('.node-circle').select('circle')
-      .attr('stroke', d => impactedFqns.has(d.id) ? '#22d3ee' : 'rgba(255,255,255,0.05)')
-      .attr('stroke-width', d => impactedFqns.has(d.id) ? 3 : 1);
+      .attr('stroke', d => impactedFqns.has(d.id) ? 'var(--pink)' : 'var(--line)')
+      .attr('stroke-width', d => impactedFqns.has(d.id) ? 3 : 1.5);
 
-    // Highlight ripple edges with animated dashes
+    // Highlight ripple edges
     d3.selectAll('.edge-line').each(function(d) {
       const src = typeof d.source === 'object' ? d.source.id : d.source;
       const tgt = typeof d.target === 'object' ? d.target.id : d.target;
       const isRipple = impactedFqns.has(src) && impactedFqns.has(tgt);
       d3.select(this)
-        .attr('stroke', isRipple ? '#22d3ee' : 'rgba(100,116,139,0.03)')
-        .attr('stroke-width', isRipple ? 2.5 : 0.3)
-        .attr('opacity', isRipple ? 0.9 : 0.05)
-        .attr('stroke-dasharray', isRipple ? '5 5' : null)
-        .classed('ripple-active', isRipple)
-        .attr('filter', isRipple ? 'url(#glow-ripple)' : null);
+        .attr('stroke', isRipple ? 'var(--pink)' : 'rgba(17, 24, 39, 0.05)')
+        .attr('stroke-width', isRipple ? 2.5 : 0.8)
+        .attr('opacity', isRipple ? 0.95 : 0.05);
     });
 
-    btn.textContent = '⚡ ' + data.impacts.length + ' symbols in blast radius';
-    btn.style.borderColor = 'rgba(34, 211, 238, 0.6)';
-    btn.style.background = 'rgba(34, 211, 238, 0.15)';
+    btn.textContent = data.impacts.length + ' symbols in blast radius';
   } catch (e) {
-    btn.textContent = '⚡ Error: ' + e.message;
+    btn.textContent = 'Error: ' + e.message;
   }
 }
 
@@ -1382,7 +1339,7 @@ async function loadDiffImpact() {
       for (const sym of fileImpact.symbols) {
         const box = document.createElement('div');
         box.className = 'dead-item';
-        box.style.borderLeft = '3px solid var(--accent-pink)';
+        box.style.borderLeft = '4px solid var(--pink)';
         const title = document.createElement('strong');
         title.textContent = sym.symbolFqn.split(':').pop() + ' (' + sym.kind + ')';
         const loc = document.createElement('code');
@@ -1454,7 +1411,7 @@ function scrubTimeline(days) {
         const baseScore = d.decayScore != null ? d.decayScore : 1.0;
         const futureScore = baseScore * Math.exp(-sliderDays / stability);
         if (d.isHotZone) {
-          return futureScore < 0.2 ? '#ef4444' : '#fbbf24';
+          return futureScore < 0.2 ? '#ef4444' : 'var(--peach)';
         }
         return decayColor(futureScore);
       }
