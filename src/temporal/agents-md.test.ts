@@ -78,17 +78,10 @@ try {
 
   // 5. Read and assert AGENTS.md
   const agentsMdContent = await fs.readFile(path.join(tmpDir, 'AGENTS.md'), 'utf-8')
-  console.log("=== AGENTS.MD CONTENT ===");
-  console.log(agentsMdContent);
-  console.log("=========================");
-  console.log("Includes '# Repository Intelligence Summary'?", agentsMdContent.includes('# Repository Intelligence Summary'));
-  console.log("Includes 'Files Tracked: 2'?", agentsMdContent.includes('Files Tracked: 2'));
-  console.log("Includes 'Files Tracked'?", agentsMdContent.includes('Files Tracked'));
-  console.log("Includes '2'?", agentsMdContent.includes('2'));
-  
   assert.ok(agentsMdContent.includes('# Repository Intelligence Summary'))
-  assert.ok(agentsMdContent.includes('Files Tracked'))
-  assert.ok(agentsMdContent.includes('Active Hot Zones: 1'))
+  assert.ok(agentsMdContent.includes('**Files Tracked**: 2'))
+  assert.ok(agentsMdContent.includes('**Symbols Analyzed**: 2'))
+  assert.ok(agentsMdContent.includes('**Active Hot Zones**: 1'))
   assert.ok(agentsMdContent.includes('src/decayed.ts'))
   assert.ok(agentsMdContent.includes('15%')) // decay freshness score
   assert.ok(agentsMdContent.includes('Implemented major login refactoring'))
