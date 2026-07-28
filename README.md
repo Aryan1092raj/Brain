@@ -9,7 +9,7 @@ Brain indexes a repository into a project-local `.brain/` directory. The CLI is 
 Clone and install Brain once:
 
 ```bash
-git clone https://github.com/your-username/brain.git
+git clone https://github.com/Aryan1092raj/Brain.git
 cd brain
 npm install
 npm run build
