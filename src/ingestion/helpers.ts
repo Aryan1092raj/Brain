@@ -67,6 +67,72 @@ export function shouldIgnorePath(relativePath: string, ignorePatterns: string[])
   })
 }
 
+interface GitignoreRule {
+  pattern: string
+  negated: boolean
+  directoryOnly: boolean
+}
+
+function parseGitignore(content: string): GitignoreRule[] {
+  return content
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#'))
+    .map(line => {
+      const negated = line.startsWith('!')
+      const raw = (negated ? line.slice(1) : line).replace(/^\\#/, '#').replace(/^\\!/, '!')
+      return {
+        pattern: raw.replace(/^\//, '').replace(/\/$/, ''),
+        negated,
+        directoryOnly: raw.endsWith('/'),
+      }
+    })
+    .filter(rule => rule.pattern.length > 0)
+}
+
+function gitignoreRegex(pattern: string): RegExp {
+  const escaped = pattern
+    .split('**').map(part => part.replace(/[.+^${}()|[\]\\]/g, '\\$&')).join('§§')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]')
+    .replaceAll('§§', '.*')
+  return new RegExp(`^${escaped}$`, 'i')
+}
+
+/**
+ * Match the common .gitignore rules used by repository prompt dumps.
+ * This intentionally keeps the matcher dependency-free because GitIngest
+ * also works on downloaded archives that do not contain a .git directory.
+ */
+export function isGitignored(relativePath: string, gitignoreContent: string): boolean {
+  const normalized = relativePath.replaceAll(path.sep, '/').replace(/^\.\//, '')
+  let ignored = false
+
+  for (const rule of parseGitignore(gitignoreContent)) {
+    const pattern = rule.pattern.replaceAll(path.sep, '/')
+    const regex = gitignoreRegex(pattern)
+    const matches = rule.directoryOnly
+      ? pattern.includes('/')
+        ? normalized === pattern || normalized.startsWith(`${pattern}/`)
+        : normalized.split('/').some(segment => regex.test(segment))
+      : pattern.includes('/')
+        ? regex.test(normalized) || regex.test(`${normalized}/`)
+        : normalized.split('/').some(segment => regex.test(segment))
+
+    if (matches) ignored = !rule.negated
+  }
+
+  return ignored
+}
+
+async function readGitignore(rootDir: string): Promise<string> {
+  try {
+    return await fs.readFile(path.join(rootDir, '.gitignore'), 'utf8')
+  } catch {
+    return ''
+  }
+}
+
 export function escapeHtml(value: unknown): string {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -126,16 +192,17 @@ export function fileLanguage(fileName: string): string {
 export async function generateRepoDigest(
   rootDir: string,
   opts?: { maxSize?: number; compress?: boolean; ignorePatterns?: string[] }
-): Promise<{ tree: string; files: Array<{ path: string; content: string; size: number }> }> {
+): Promise<{ tree: string; files: Array<{ path: string; content: string; size: number; ignoredByGitignore: boolean }> }> {
   const maxSize = opts?.maxSize ?? 60000
   const compress = opts?.compress ?? false
   const ignorePatterns = opts?.ignorePatterns ?? []
+  const gitignoreContent = await readGitignore(rootDir)
 
   const IGNORE_DIRS = DEFAULT_IGNORE_DIRS
   const IGNORE_EXTS = DEFAULT_IGNORE_EXTS
   const IGNORE_FILES = DEFAULT_IGNORE_FILES
 
-  const fileList: Array<{ path: string; content: string; size: number }> = []
+  const fileList: Array<{ path: string; content: string; size: number; ignoredByGitignore: boolean }> = []
 
   async function walk(dir: string, currentPrefix: string): Promise<string> {
     let treeStr = ''
@@ -187,7 +254,12 @@ export async function generateRepoDigest(
             }
           }
 
-          fileList.push({ path: relativePath, content, size: stat.size })
+          fileList.push({
+            path: relativePath,
+            content,
+            size: stat.size,
+            ignoredByGitignore: isGitignored(relativePath, gitignoreContent),
+          })
         } catch {
           // Skip
         }
@@ -205,10 +277,12 @@ export interface TreeNode {
   type: 'file' | 'directory'
   path?: string
   size?: number
+  ignoredByGitignore?: boolean
   children?: TreeNode[]
 }
 
 export async function buildDirectoryTree(rootDir: string, dir = rootDir, ignorePatterns: string[] = []): Promise<TreeNode[]> {
+  const gitignoreContent = await readGitignore(rootDir)
   const IGNORE_DIRS = DEFAULT_IGNORE_DIRS
   const IGNORE_EXTS = DEFAULT_IGNORE_EXTS
   const IGNORE_FILES = DEFAULT_IGNORE_FILES
@@ -241,7 +315,13 @@ export async function buildDirectoryTree(rootDir: string, dir = rootDir, ignoreP
       if (IGNORE_FILES.has(entry.name) || IGNORE_EXTS.has(ext)) continue
       try {
         const stat = await fs.stat(fullPath)
-        result.push({ name: entry.name, type: 'file', path: relativePath, size: stat.size })
+        result.push({
+          name: entry.name,
+          type: 'file',
+          path: relativePath,
+          size: stat.size,
+          ignoredByGitignore: isGitignored(relativePath, gitignoreContent),
+        })
       } catch {
         // Skip
       }

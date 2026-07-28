@@ -3,11 +3,15 @@ import path from 'node:path'
 import fs from 'node:fs'
 
 let _db: Database.Database | null = null
+let _dbPath: string | null = null
 
 export function initSqlite(brainDir: string): void {
   fs.mkdirSync(brainDir, { recursive: true })
   const dbPath = path.join(brainDir, 'brain.db')
+  if (_db && _dbPath === dbPath) return
+  if (_db) _db.close()
   _db = new Database(dbPath)
+  _dbPath = dbPath
 }
 
 export function getDb(): Database.Database {
@@ -18,4 +22,5 @@ export function getDb(): Database.Database {
 export function closeDb(): void {
   _db?.close()
   _db = null
+  _dbPath = null
 }

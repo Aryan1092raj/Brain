@@ -3,11 +3,19 @@ import path from 'node:path'
 import fs from 'node:fs'
 
 let _db: Database | null = null
+let _dbPath: string | null = null
 
 export function initKuzu(brainDir: string): void {
   const dbPath = path.join(brainDir, 'graph', 'brain.kuzu')
   fs.mkdirSync(path.join(brainDir, 'graph'), { recursive: true })
+
+  // `brain init` initialises Kuzu before calling `scan`. Scan also prepares
+  // its own dependencies, so opening the same database twice can leave a
+  // fresh install with an empty or locked graph on some platforms.
+  if (_db && _dbPath === dbPath) return
+
   _db = new Database(dbPath)
+  _dbPath = dbPath
 }
 
 export function getKuzuClient(): KuzuClient {
@@ -62,5 +70,10 @@ export class KuzuClient {
 }
 
 export function closeKuzu(): void {
+  // Kuzu's synchronous close can terminate the native process when a
+  // connection/query wrapper is still being garbage-collected. Keep the
+  // historical process-safe behavior here; the daemon exits cleanly and the
+  // OS releases the handle.
   _db = null
+  _dbPath = null
 }

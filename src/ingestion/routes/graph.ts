@@ -55,7 +55,9 @@ export function registerGraphRoutes(router: Router, config: Config): void {
         return
       }
 
-      const graph = await getGraphOverview(repo, 140)
+      // Keep node explanations on the same scope as the dashboard graph so
+      // clicking a later visible node does not incorrectly return 404.
+      const graph = await getGraphOverview(repo, 500)
       const node = graph.nodes.find(n => n.id === id)
       if (!node) {
         res.status(404).json({ error: 'node not found' })

@@ -101,14 +101,19 @@ export async function getGraphOverview(repo: string, limit = 90): Promise<GraphO
       f.decay_score AS decayScore,
       f.last_touched AS lastTouched,
       f.stability AS stability
-    LIMIT 100
+    LIMIT 500
   `, { repo }).catch(() => [])
 
   const symbolIds = new Set(symbols.map(s => s.fqn))
   const visibleCalls = calls.filter(c => symbolIds.has(c.source) && symbolIds.has(c.target))
   
-  // Mix file nodes from queried Kuzu files and symbol-extracted files
-  const filePaths = [...new Set(symbols.map(s => s.file))].slice(0, 28)
+  // Include files even when a parser produced no symbols. This keeps the
+  // local graph useful on a fresh install, for unsupported languages, and
+  // when a repository contains config/assets alongside source files.
+  const filePaths = [...new Set([
+    ...files.map(f => f.path),
+    ...symbols.map(s => s.file),
+  ])].slice(0, 100)
   const fileMap = new Map(files.map(f => [f.path, f]))
   const fileIds = new Map(filePaths.map(file => [file, `file:${file}`]))
 

@@ -130,6 +130,12 @@ export function registerDashboardRoute(router: Router, config: Config): void {
     0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(100, 233, 163, 0.5); }
     50% { opacity: 0.6; box-shadow: 0 0 0 6px rgba(100, 233, 163, 0); }
   }
+
+  @keyframes graphPulse {
+    0%, 100% { opacity: 0.7; transform: scale(1); }
+    50% { opacity: 0.05; transform: scale(1.45); }
+  }
+  .hot-ring { transform-box: fill-box; transform-origin: center; animation: graphPulse 1.4s ease-in-out infinite; }
   
   /* === MAIN LAYOUT === */
   main {
@@ -766,7 +772,7 @@ export function registerDashboardRoute(router: Router, config: Config): void {
       <span id="graph-metrics" class="section-meta">Loading graph...</span>
     </div>
     <div class="graph-container">
-      <svg id="graph-canvas" role="img" aria-label="Repository knowledge graph — D3 force-directed layout with decay heatmap"></svg>
+      <svg id="graph-canvas" role="img" aria-label="Repository knowledge graph with decay heatmap"></svg>
       <aside class="inspector" id="graph-inspector">
         <div>
           <div class="inspector-title">Select a Node</div>
@@ -777,7 +783,7 @@ export function registerDashboardRoute(router: Router, config: Config): void {
           <span class="pill">symbol</span>
           <span class="pill">calls</span>
         </div>
-        <p class="inspector-summary">The graph uses a force-directed layout. Nodes are colored by memory decay — green (fresh) → amber (aging) → red (decaying). Pulsing nodes indicate hot zones with high change velocity.</p>
+        <p class="inspector-summary">The local graph groups files and symbols by relationship. Nodes are colored by memory decay — green (fresh) → amber (aging) → red (decaying). Pulsing nodes indicate hot zones with high change velocity.</p>
       </aside>
     </div>
     <div class="legend">
@@ -845,17 +851,26 @@ export function registerDashboardRoute(router: Router, config: Config): void {
   <p class="foot">Living Codebase Brain Dashboard</p>
 </main>
 
-<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
 // === GLOBALS ===
-if (window.marked) marked.setOptions({ breaks: true, gfm: true });
 const REPO = ${repoJson};
 const GROQ_CONFIGURED = ${groqConfigured};
 let graphData = null;
 let selectedNodeId = null;
-let simulation = null;
 let currentRippleSet = null;
+const graphState = {
+  svg: null,
+  root: null,
+  nodes: [],
+  edges: [],
+  nodeElements: new Map(),
+  edgeElements: [],
+  width: 0,
+  height: 0,
+  scale: 1,
+  tx: 0,
+  ty: 0,
+};
 
 // === DECAY COLOR SCALE (Light Theme Harmonized) ===
 function decayColor(score) {
@@ -864,11 +879,18 @@ function decayColor(score) {
   // green (fresh=1) → amber (0.5) → red (decayed=0)
   if (s > 0.6) {
     const t = (s - 0.6) / 0.4;
-    return d3.interpolateRgb('#ffc174', '#64e9a3')(t);
+    return interpolateColor('#ffc174', '#64e9a3', t);
   } else {
     const t = s / 0.6;
-    return d3.interpolateRgb('#ff8b8b', '#ffc174')(t);
+    return interpolateColor('#ff8b8b', '#ffc174', t);
   }
+}
+
+function interpolateColor(from, to, t) {
+  const parse = value => value.match(/[\da-f]{2}/gi).map(part => parseInt(part, 16));
+  const a = parse(from.slice(1));
+  const b = parse(to.slice(1));
+  return '#' + a.map((channel, index) => Math.round(channel + (b[index] - channel) * t).toString(16).padStart(2, '0')).join('');
 }
 
 // === ASK BRAIN ===
@@ -884,8 +906,7 @@ async function askBrain() {
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Chat request failed');
     output.style.opacity = '1';
-    if (d.answer && window.marked) output.innerHTML = marked.parse(d.answer);
-    else output.textContent = d.answer || d.error || 'No answer';
+    output.textContent = d.answer || d.error || 'No answer';
   } catch (e) {
     output.style.opacity = '1';
     output.textContent = 'Error: ' + e.message;
@@ -896,6 +917,8 @@ async function askBrain() {
 async function loadGraphData() {
   const metrics = document.getElementById('graph-metrics');
   const deadList = document.getElementById('dead-code-list');
+  const timeline = document.getElementById('timeline-slider');
+  const timelineDays = timeline ? timeline.value : '0';
   try {
     const r = await fetch('/api/graph-data?repo=' + encodeURIComponent(REPO) + '&limit=200');
     const data = await r.json();
@@ -903,6 +926,7 @@ async function loadGraphData() {
     graphData = data;
     metrics.textContent = data.metrics.nodeCount + ' nodes · ' + data.metrics.edgeCount + ' edges · ' + (data.metrics.hotZoneCount || 0) + ' hot zones';
     renderD3Graph(data);
+    scrubTimeline(timelineDays);
     window.originalDeadCode = data.deadCode || [];
     renderDeadCode(window.originalDeadCode);
   } catch (e) {
@@ -911,71 +935,125 @@ async function loadGraphData() {
   }
 }
 
-// === D3 FORCE-DIRECTED GRAPH ===
-function renderD3Graph(data) {
-  const svg = d3.select('#graph-canvas');
-  svg.selectAll('*').remove();
+// === LOCAL SVG KNOWLEDGE GRAPH ===
+const SVG_NS = 'http://www.w3.org/2000/svg';
 
-  const svgEl = svg.node();
+function createSvgElement(tag, attributes = {}) {
+  const element = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, String(value));
+  return element;
+}
+
+function graphPoint(event) {
+  const rect = graphState.svg.getBoundingClientRect();
+  return {
+    x: (event.clientX - rect.left - graphState.tx) / graphState.scale,
+    y: (event.clientY - rect.top - graphState.ty) / graphState.scale,
+  };
+}
+
+function applyGraphTransform() {
+  if (graphState.root) graphState.root.setAttribute('transform', 'translate(' + graphState.tx + ',' + graphState.ty + ') scale(' + graphState.scale + ')');
+}
+
+function layoutGraph(nodes, edges, width, height) {
+  const files = nodes.filter(node => node.type === 'file');
+  const symbolsByFile = new Map(files.map(file => [file.file, []]));
+  for (const symbol of nodes.filter(node => node.type === 'symbol')) {
+    if (!symbolsByFile.has(symbol.file)) symbolsByFile.set(symbol.file, []);
+    symbolsByFile.get(symbol.file).push(symbol);
+  }
+
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const fileRadius = Math.max(100, Math.min(width, height) * 0.31);
+  files.forEach((file, index) => {
+    const angle = (index / Math.max(files.length, 1)) * Math.PI * 2 - Math.PI / 2;
+    file.x = centerX + Math.cos(angle) * fileRadius;
+    file.y = centerY + Math.sin(angle) * fileRadius;
+  });
+
+  for (const [filePath, symbols] of symbolsByFile) {
+    const file = files.find(candidate => candidate.file === filePath);
+    const baseX = file?.x ?? centerX;
+    const baseY = file?.y ?? centerY;
+    symbols.forEach((symbol, index) => {
+      const angle = (index / Math.max(symbols.length, 1)) * Math.PI * 2;
+      const radius = 34 + Math.min(90, Math.floor(index / 8) * 22);
+      symbol.x = baseX + Math.cos(angle) * radius;
+      symbol.y = baseY + Math.sin(angle) * radius;
+    });
+  }
+
+  // A small deterministic relaxation keeps dense clusters legible without a
+  // third-party force-layout download or a long-running browser simulation.
+  for (let iteration = 0; iteration < 18; iteration++) {
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i];
+        const b = nodes[j];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        const distance = Math.max(1, Math.hypot(dx, dy));
+        const minimum = (a.type === 'file' ? 28 : 12) + (b.type === 'file' ? 28 : 12);
+        if (distance < minimum) {
+          const push = (minimum - distance) / distance * 0.35;
+          dx *= push;
+          dy *= push;
+          a.x -= dx;
+          a.y -= dy;
+          b.x += dx;
+          b.y += dy;
+        }
+      }
+    }
+  }
+
+  for (const node of nodes) {
+    node.x = Math.max(18, Math.min(width - 18, node.x));
+    node.y = Math.max(18, Math.min(height - 18, node.y));
+  }
+}
+
+function renderD3Graph(data) {
+  const svg = document.getElementById('graph-canvas');
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const svgEl = svg;
   const rect = svgEl.getBoundingClientRect();
   const width = Math.max(320, rect.width);
   const height = Math.max(280, rect.height);
-  svg.attr('viewBox', [0, 0, width, height]);
+  svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
 
-  // Prepare node & edge data with mutable x, y
   const nodes = data.nodes.map(n => ({ ...n }));
   const nodeById = new Map(nodes.map(n => [n.id, n]));
   const edges = data.edges.filter(e => nodeById.has(e.source) && nodeById.has(e.target)).map(e => ({ ...e }));
+  graphState.svg = svg;
+  graphState.root = createSvgElement('g');
+  graphState.nodes = nodes;
+  graphState.edges = edges;
+  graphState.nodeElements = new Map();
+  graphState.edgeElements = [];
+  graphState.width = width;
+  graphState.height = height;
+  graphState.scale = 1;
+  graphState.tx = 0;
+  graphState.ty = 0;
+  layoutGraph(nodes, edges, width, height);
+  svg.appendChild(graphState.root);
 
-  // Compute degree for node sizing
-  const degree = new Map();
-  for (const e of edges) {
-    degree.set(typeof e.source === 'string' ? e.source : e.source.id, (degree.get(typeof e.source === 'string' ? e.source : e.source.id) || 0) + 1);
-    degree.set(typeof e.target === 'string' ? e.target : e.target.id, (degree.get(typeof e.target === 'string' ? e.target : e.target.id) || 0) + 1);
+  if (nodes.length === 0) {
+    const empty = createSvgElement('text', { x: width / 2, y: height / 2 - 8, 'text-anchor': 'middle', 'font-size': 15, 'font-weight': 700, fill: '#596171' });
+    empty.textContent = 'No indexed graph yet';
+    const hint = createSvgElement('text', { x: width / 2, y: height / 2 + 18, 'text-anchor': 'middle', 'font-size': 12, fill: '#596171' });
+    hint.textContent = 'Run brain scan, then refresh this page.';
+    graphState.root.append(empty, hint);
+    return;
   }
 
-  // Zoom & Pan
-  const g = svg.append('g');
-  const zoom = d3.zoom()
-    .scaleExtent([0.2, 6])
-    .on('zoom', (event) => g.attr('transform', event.transform));
-  svg.call(zoom);
-  svg.on('dblclick.zoom', () => svg.transition().duration(600).call(zoom.transform, d3.zoomIdentity));
-
-  // Edge layer
-  const edgeLayer = g.append('g').attr('class', 'edges');
-  const link = edgeLayer.selectAll('line')
-    .data(edges)
-    .join('line')
-    .attr('class', 'edge-line')
-    .attr('stroke', d => d.type === 'calls' ? 'rgba(17, 24, 39, 0.45)' : 'rgba(17, 24, 39, 0.15)')
-    .attr('stroke-width', d => d.type === 'calls' ? 1.5 : 0.8);
-
-  // Node layer
-  const nodeLayer = g.append('g').attr('class', 'nodes');
-
-  // Pulsing ring for hot zones (rendered behind nodes)
-  const hotRingLayer = g.append('g').attr('class', 'hot-rings');
-  const hotNodes = nodes.filter(n => n.isHotZone);
-  
-  const hotRing = hotRingLayer.selectAll('circle')
-    .data(hotNodes)
-    .join('circle')
-    .attr('fill', 'none')
-    .attr('stroke', 'var(--pink)')
-    .attr('stroke-width', 2);
-
-  // Animate pulsing rings
-  function pulseRings() {
-    hotRing
-      .attr('r', d => nodeRadius(d) + 4)
-      .attr('opacity', 0.8)
-      .transition()
-      .duration(1200)
-      .ease(d3.easeSinInOut)
-      .attr('r', d => nodeRadius(d) + 14)
-      .attr('opacity', 0)
-      .on('end', pulseRings);
+  const degree = new Map();
+  for (const e of edges) {
+    degree.set(e.source, (degree.get(e.source) || 0) + 1);
+    degree.set(e.target, (degree.get(e.target) || 0) + 1);
   }
 
   function nodeRadius(d) {
@@ -985,91 +1063,107 @@ function renderD3Graph(data) {
   }
 
   function nodeColor(d) {
-    if (d.type === 'file') return 'var(--pink)';
-    if (d.isHotZone) return 'var(--peach)';
+    if (d.type === 'file') return '#ff4167';
+    if (d.isHotZone) return '#ffc174';
     return decayColor(d.decayScore);
   }
 
-  const node = nodeLayer.selectAll('g')
-    .data(nodes)
-    .join('g')
-    .attr('class', 'node-circle')
-    .call(d3.drag()
-      .on('start', dragStarted)
-      .on('drag', dragged)
-      .on('end', dragEnded))
-    .on('click', (event, d) => {
+  const edgeLayer = createSvgElement('g', { class: 'edges' });
+  graphState.root.appendChild(edgeLayer);
+  for (const edge of edges) {
+    const line = createSvgElement('line', {
+      class: 'edge-line',
+      stroke: edge.type === 'calls' ? 'rgba(17, 24, 39, 0.45)' : 'rgba(17, 24, 39, 0.15)',
+      'stroke-width': edge.type === 'calls' ? 1.5 : 0.8,
+    });
+    edgeLayer.appendChild(line);
+    graphState.edgeElements.push({ edge, element: line });
+  }
+
+  const nodeLayer = createSvgElement('g', { class: 'nodes' });
+  graphState.root.appendChild(nodeLayer);
+  for (const node of nodes) {
+    const group = createSvgElement('g', { class: 'node-circle', transform: 'translate(' + node.x + ',' + node.y + ')' });
+    const circle = createSvgElement('circle', {
+      r: nodeRadius(node), fill: nodeColor(node), stroke: 'var(--line)',
+      'stroke-width': node.type === 'file' ? 2.5 : 1.5,
+    });
+    group.appendChild(circle);
+    const title = createSvgElement('title');
+    title.textContent = (node.file || node.label) + (node.kind ? ' · ' + node.kind : '') + (node.decayScore != null ? ' · decay: ' + node.decayScore.toFixed(2) : '');
+    group.appendChild(title);
+    if (node.type === 'file') {
+      const label = createSvgElement('text', { dx: nodeRadius(node) + 5, dy: 4, 'font-size': 10, 'font-weight': 700, fill: 'var(--line)' });
+      label.textContent = node.label ? node.label.slice(0, 20) : '';
+      group.appendChild(label);
+    }
+    if (node.isHotZone) {
+      const ring = createSvgElement('circle', { class: 'hot-ring', r: nodeRadius(node) + 5, fill: 'none', stroke: 'var(--pink)', 'stroke-width': 2 });
+      group.insertBefore(ring, circle);
+    }
+    let dragMoved = false;
+    group.addEventListener('pointerdown', event => {
       event.stopPropagation();
-      selectNode(d.id);
+      dragMoved = false;
+      group.setPointerCapture(event.pointerId);
+      group.dataset.dragging = 'true';
     });
-
-  node.append('circle')
-    .attr('r', d => nodeRadius(d))
-    .attr('fill', d => nodeColor(d))
-    .attr('stroke', 'var(--line)')
-    .attr('stroke-width', d => d.type === 'file' ? 2.5 : 1.5);
-
-  node.append('title')
-    .text(d => (d.file || d.label) + (d.kind ? ' · ' + d.kind : '') + (d.decayScore != null ? ' · decay: ' + d.decayScore.toFixed(2) : ''));
-
-  // Labels for file nodes
-  node.filter(d => d.type === 'file')
-    .append('text')
-    .attr('dx', d => nodeRadius(d) + 5)
-    .attr('dy', 4)
-    .attr('font-size', '10px')
-    .attr('font-weight', '700')
-    .attr('fill', 'var(--line)')
-    .text(d => d.label ? d.label.slice(0, 20) : '');
-
-  // Simulation
-  simulation = d3.forceSimulation(nodes)
-    .force('link', d3.forceLink(edges).id(d => d.id).distance(d => d.type === 'contains' ? 30 : 80).strength(d => d.type === 'contains' ? 0.8 : 0.15))
-    .force('charge', d3.forceManyBody().strength(d => d.type === 'file' ? -200 : -60).distanceMax(300))
-    .force('center', d3.forceCenter(width / 2, height / 2).strength(0.05))
-    .force('collision', d3.forceCollide().radius(d => nodeRadius(d) + 3))
-    .force('x', d3.forceX(width / 2).strength(0.02))
-    .force('y', d3.forceY(height / 2).strength(0.02))
-    .alphaDecay(0.02)
-    .on('tick', () => {
-      link
-        .attr('x1', d => d.source.x)
-        .attr('y1', d => d.source.y)
-        .attr('x2', d => d.target.x)
-        .attr('y2', d => d.target.y);
-
-      node.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
-      hotRing.attr('cx', d => d.x).attr('cy', d => d.y);
+    group.addEventListener('pointermove', event => {
+      if (group.dataset.dragging !== 'true') return;
+      const point = graphPoint(event);
+      node.x = Math.max(18, Math.min(width - 18, point.x));
+      node.y = Math.max(18, Math.min(height - 18, point.y));
+      dragMoved = true;
+      drawGraphPositions();
     });
-
-  pulseRings();
-
-  // Drag handlers
-  function dragStarted(event, d) {
-    if (!event.active) simulation.alphaTarget(0.3).restart();
-    d.fx = d.x;
-    d.fy = d.y;
-  }
-  function dragged(event, d) {
-    d.fx = event.x;
-    d.fy = event.y;
-  }
-  function dragEnded(event, d) {
-    if (!event.active) simulation.alphaTarget(0);
-    d.fx = null;
-    d.fy = null;
+    group.addEventListener('pointerup', event => {
+      group.dataset.dragging = 'false';
+      if (!dragMoved) selectNode(node.id);
+      group.releasePointerCapture(event.pointerId);
+    });
+    group.addEventListener('click', event => event.stopPropagation());
+    nodeLayer.appendChild(group);
+    graphState.nodeElements.set(node.id, { node, group, circle });
   }
 
-  // Click background to deselect
-  svg.on('click', () => {
+  drawGraphPositions();
+  svg.onwheel = event => {
+    event.preventDefault();
+    const before = graphPoint(event);
+    graphState.scale = Math.max(0.35, Math.min(5, graphState.scale * (event.deltaY < 0 ? 1.1 : 0.9)));
+    const rectNow = svg.getBoundingClientRect();
+    graphState.tx = event.clientX - rectNow.left - before.x * graphState.scale;
+    graphState.ty = event.clientY - rectNow.top - before.y * graphState.scale;
+    applyGraphTransform();
+  };
+  svg.ondblclick = () => {
+    graphState.scale = 1;
+    graphState.tx = 0;
+    graphState.ty = 0;
+    applyGraphTransform();
+  };
+  svg.onclick = () => {
     selectedNodeId = null;
     currentRippleSet = null;
     resetHighlighting();
     resetInspector();
-  });
+  };
 
   // Auto-select first node
   if (nodes.length > 0) selectNode(nodes[0].id, false);
+}
+
+function drawGraphPositions() {
+  for (const { edge, element } of graphState.edgeElements) {
+    const source = graphState.nodes.find(node => node.id === edge.source);
+    const target = graphState.nodes.find(node => node.id === edge.target);
+    if (!source || !target) continue;
+    element.setAttribute('x1', String(source.x));
+    element.setAttribute('y1', String(source.y));
+    element.setAttribute('x2', String(target.x));
+    element.setAttribute('y2', String(target.y));
+  }
+  for (const { node, group } of graphState.nodeElements.values()) group.setAttribute('transform', 'translate(' + node.x + ',' + node.y + ')');
 }
 
 // === NODE SELECTION & HIGHLIGHTING ===
@@ -1127,39 +1221,39 @@ function highlightSelection(id) {
     }
   }
 
-  d3.selectAll('.node-circle').attr('opacity', d => incidentNodes.has(d.id) ? 1 : 0.15);
-  d3.selectAll('.edge-line').each(function(d) {
-    const src = typeof d.source === 'object' ? d.source.id : d.source;
-    const tgt = typeof d.target === 'object' ? d.target.id : d.target;
+  for (const { node, group, circle } of graphState.nodeElements.values()) {
+    group.setAttribute('opacity', incidentNodes.has(node.id) ? '1' : '0.15');
+    circle.setAttribute('stroke', node.id === id ? 'var(--pink)' : 'var(--line)');
+    circle.setAttribute('stroke-width', node.id === id ? '3' : node.type === 'file' ? '2.5' : '1.5');
+  }
+  for (const { edge, element } of graphState.edgeElements) {
+    const src = edge.source;
+    const tgt = edge.target;
     const isIncident = src === id || tgt === id;
-    d3.select(this)
-      .attr('stroke', isIncident ? (currentRippleSet ? 'var(--pink)' : 'var(--line)') : 'rgba(17, 24, 39, 0.05)')
-      .attr('stroke-width', isIncident ? 2.5 : 0.5)
-      .attr('opacity', isIncident ? 0.95 : 0.05);
-  });
-
-  // Highlight selected node
-  d3.selectAll('.node-circle').select('circle')
-    .attr('stroke', d => d.id === id ? 'var(--pink)' : 'var(--line)')
-    .attr('stroke-width', d => d.id === id ? 3 : 1.5);
+    element.setAttribute('stroke', isIncident ? (currentRippleSet ? 'var(--pink)' : 'var(--line)') : 'rgba(17, 24, 39, 0.05)');
+    element.setAttribute('stroke-width', isIncident ? '2.5' : '0.5');
+    element.setAttribute('opacity', isIncident ? '0.95' : '0.05');
+  }
 }
 
 function resetHighlighting() {
-  d3.selectAll('.node-circle').attr('opacity', 1);
-  d3.selectAll('.node-circle').select('circle')
-    .attr('stroke', 'var(--line)')
-    .attr('stroke-width', d => d.type === 'file' ? 2.5 : 1.5);
-  d3.selectAll('.edge-line')
-    .attr('stroke', d => d.type === 'calls' ? 'rgba(17, 24, 39, 0.45)' : 'rgba(17, 24, 39, 0.15)')
-    .attr('stroke-width', d => d.type === 'calls' ? 1.5 : 0.8)
-    .attr('opacity', 1);
+  for (const { node, group, circle } of graphState.nodeElements.values()) {
+    group.setAttribute('opacity', '1');
+    circle.setAttribute('stroke', 'var(--line)');
+    circle.setAttribute('stroke-width', node.type === 'file' ? '2.5' : '1.5');
+  }
+  for (const { edge, element } of graphState.edgeElements) {
+    element.setAttribute('stroke', edge.type === 'calls' ? 'rgba(17, 24, 39, 0.45)' : 'rgba(17, 24, 39, 0.15)');
+    element.setAttribute('stroke-width', edge.type === 'calls' ? '1.5' : '0.8');
+    element.setAttribute('opacity', '1');
+  }
 }
 
 function resetInspector() {
   const inspector = document.getElementById('graph-inspector');
   inspector.innerHTML = '<div><div class="inspector-title">Select a Node</div><div class="inspector-fqn">Click any file or symbol in the graph to inspect it.</div></div>' +
     '<div class="pill-row"><span class="pill">file</span><span class="pill">symbol</span><span class="pill">calls</span></div>' +
-    '<p class="inspector-summary">The graph uses a force-directed layout. Nodes are colored by memory decay — green (fresh) → amber (aging) → red (decaying). Pulsing nodes indicate hot zones.</p>';
+    '<p class="inspector-summary">The local graph groups files and symbols by relationship. Nodes are colored by memory decay — green (fresh) → amber (aging) → red (decaying). Pulsing nodes indicate hot zones.</p>';
 }
 
 // === UPDATE INSPECTOR ===
@@ -1295,21 +1389,22 @@ async function computeRipple(fqn, btn) {
     currentRippleSet = impactedFqns;
 
     // Highlight impacted nodes
-    d3.selectAll('.node-circle').attr('opacity', d => impactedFqns.has(d.id) ? 1 : 0.08);
-    d3.selectAll('.node-circle').select('circle')
-      .attr('stroke', d => impactedFqns.has(d.id) ? 'var(--pink)' : 'var(--line)')
-      .attr('stroke-width', d => impactedFqns.has(d.id) ? 3 : 1.5);
+    for (const { node, group, circle } of graphState.nodeElements.values()) {
+      const included = impactedFqns.has(node.id);
+      group.setAttribute('opacity', included ? '1' : '0.08');
+      circle.setAttribute('stroke', included ? 'var(--pink)' : 'var(--line)');
+      circle.setAttribute('stroke-width', included ? '3' : '1.5');
+    }
 
     // Highlight ripple edges
-    d3.selectAll('.edge-line').each(function(d) {
-      const src = typeof d.source === 'object' ? d.source.id : d.source;
-      const tgt = typeof d.target === 'object' ? d.target.id : d.target;
+    for (const { edge, element } of graphState.edgeElements) {
+      const src = edge.source;
+      const tgt = edge.target;
       const isRipple = impactedFqns.has(src) && impactedFqns.has(tgt);
-      d3.select(this)
-        .attr('stroke', isRipple ? 'var(--pink)' : 'rgba(17, 24, 39, 0.05)')
-        .attr('stroke-width', isRipple ? 2.5 : 0.8)
-        .attr('opacity', isRipple ? 0.95 : 0.05);
-    });
+      element.setAttribute('stroke', isRipple ? 'var(--pink)' : 'rgba(17, 24, 39, 0.05)');
+      element.setAttribute('stroke-width', isRipple ? '2.5' : '0.8');
+      element.setAttribute('opacity', isRipple ? '0.95' : '0.05');
+    }
 
     btn.textContent = data.impacts.length + ' symbols in blast radius';
   } catch (e) {
@@ -1416,24 +1511,18 @@ function scrubTimeline(days) {
     display.textContent = 'Simulated: +' + sliderDays + ' days in future';
   }
 
-  // Update colors of all symbol/file nodes in D3 based on future decay
-  d3.selectAll('.node-circle').select('circle')
-    .attr('fill', d => {
-      if (d.type === 'file') {
-        const fileStability = d.stability || 30.0;
-        const baseScore = d.decayScore != null ? d.decayScore : 1.0;
-        const futureScore = baseScore * Math.exp(-sliderDays / fileStability);
-        return decayColor(futureScore);
-      } else {
-        const stability = d.stability || 14.0;
-        const baseScore = d.decayScore != null ? d.decayScore : 1.0;
-        const futureScore = baseScore * Math.exp(-sliderDays / stability);
-        if (d.isHotZone) {
-          return futureScore < 0.2 ? '#ef4444' : 'var(--peach)';
-        }
-        return decayColor(futureScore);
-      }
-    });
+  // Update colors of all symbol/file nodes based on future decay.
+  for (const { node, circle } of graphState.nodeElements.values()) {
+    const stability = node.stability || (node.type === 'file' ? 30.0 : 14.0);
+    const baseScore = node.decayScore != null ? node.decayScore : 1.0;
+    const futureScore = baseScore * Math.exp(-sliderDays / stability);
+    const colorAtCurrentTime = node.type === 'file'
+      ? '#ff4167'
+      : node.isHotZone ? '#ffc174' : decayColor(futureScore);
+    circle.setAttribute('fill', sliderDays === 0 ? colorAtCurrentTime : node.type !== 'file' && node.isHotZone
+      ? futureScore < 0.2 ? '#ef4444' : '#ffc174'
+      : decayColor(futureScore));
+  }
 
   // If a node is selected, update its inspector decay bar as well!
   if (selectedNodeId) {

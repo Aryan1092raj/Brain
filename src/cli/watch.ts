@@ -2,7 +2,9 @@ import { loadConfig } from '../config/loader.js'
 import { createWebhookServer } from '../ingestion/webhook.js'
 import { startScheduler, stopScheduler } from '../memory/scheduler.js'
 import { initKuzu, closeKuzu } from '../graph/client.js'
-import { initSqlite, closeDb } from '../memory/db.js'
+import { initGraphSchema } from '../graph/schema.js'
+import { initSqlite, getDb, closeDb } from '../memory/db.js'
+import { initMemorySchema } from '../memory/schema.js'
 import { init } from './init.js'
 import fs from 'node:fs/promises'
 import { getBrainDir, getProjectConfigPath } from '../config/paths.js'
@@ -26,7 +28,9 @@ export async function watch(cwd: string): Promise<void> {
 
   const config = await loadConfig(cwd)
   initKuzu(brainDir)
+  await initGraphSchema()
   initSqlite(brainDir)
+  initMemorySchema(getDb())
 
   const app = createWebhookServer(config, trackInFlight)
 

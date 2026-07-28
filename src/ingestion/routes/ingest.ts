@@ -47,8 +47,9 @@ export function registerIngestRoute(router: Router, config: Config): void {
       const nestedTree = await buildDirectoryTree(rootPath, rootPath, ignorePatterns)
 
       // Calculate characteristics
-      const fileCount = files.length
-      const charCount = files.reduce((acc, f) => acc + f.content.length, 0)
+      const includedFiles = files.filter(file => !file.ignoredByGitignore)
+      const fileCount = includedFiles.length
+      const charCount = includedFiles.reduce((acc, f) => acc + f.content.length, 0)
       const estimatedTokens = Math.round(charCount / 4)
 
       // Escape JSON to prevent breaking script tag (XSS or syntax issues)
@@ -226,6 +227,11 @@ function formatSize(bytes) {
 }
 
 function renderTree(container, nodes) {
+  function containsGitignoredFile(item) {
+    if (item.type === 'file') return Boolean(item.ignoredByGitignore);
+    return (item.children || []).some(containsGitignoredFile);
+  }
+
   function buildHtml(items) {
     let html = '<ul class="tree-list">';
     for (const item of items) {
@@ -233,7 +239,7 @@ function renderTree(container, nodes) {
         html += '<li class="tree-node directory">';
         html += '<details open>';
         html += '<summary>';
-        html += '<input type="checkbox" checked class="dir-checkbox" onchange="toggleDir(this)">';
+        html += '<input type="checkbox" ' + (containsGitignoredFile(item) ? '' : 'checked') + ' class="dir-checkbox" onchange="toggleDir(this)">';
         html += '📂 ' + item.name;
         html += '</summary>';
         html += buildHtml(item.children);
@@ -242,7 +248,7 @@ function renderTree(container, nodes) {
       } else {
         html += '<li class="tree-node file">';
         html += '<label>';
-        html += '<input type="checkbox" checked data-path="' + item.path + '" onchange="toggleFile()">';
+        html += '<input type="checkbox" ' + (item.ignoredByGitignore ? '' : 'checked') + ' data-path="' + item.path + '" onchange="toggleFile()">';
         html += '📄 ' + item.name;
         html += '<span style="color: var(--muted); font-size: 10px; font-weight: 700; margin-left: 4px;">(' + formatSize(item.size) + ')</span>';
         html += '</label>';
