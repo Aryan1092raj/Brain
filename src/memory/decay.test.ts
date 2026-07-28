@@ -64,7 +64,6 @@ try {
 
   assert.ok(res.length > 0)
   const score = res[0].decay
-  console.log('ACTUAL SCORE IS:', score)
   assert.ok(score > 0.30 && score < 0.40)
 } finally {
   closeKuzu()

@@ -12,6 +12,7 @@ import { writeTier1Events, type RawEvent } from '../memory/tier1.js'
 import { detectModules } from './module-detector.js'
 import { commentOnPR } from '../automation/pr-commenter.js'
 import { reviewCommit } from '../automation/code-reviewer.js'
+import { hasGroqApiKey } from '../query/groq.js'
 
 export async function processPushEvent(repo: RepoConfig, payload: Record<string, unknown>): Promise<void> {
   const t0 = Date.now()
@@ -107,7 +108,7 @@ export async function processPushEvent(repo: RepoConfig, payload: Record<string,
       )
     }
 
-    if (process.env.OPENAI_API_KEY || process.env.GROQ_API_KEY) {
+    if (hasGroqApiKey()) {
       const patchContent = changes.map(c => c.patch ?? '').filter(Boolean).join('\n---\n')
       if (patchContent) {
         reviewCommit(repo, commitSha, patchContent).then(result => {

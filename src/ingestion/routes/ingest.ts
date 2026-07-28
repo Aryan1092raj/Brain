@@ -8,6 +8,7 @@ import {
   escapeHtml
 } from '../helpers.js'
 import type { Config } from '../../config/schema.js'
+import { getBrainDir } from '../../config/paths.js'
 
 export function registerIngestRoute(router: Router, config: Config): void {
   const handleIngest = async (req: Request, res: Response) => {
@@ -38,7 +39,7 @@ export function registerIngestRoute(router: Router, config: Config): void {
         rootPath = matchedRepo.path
         isLocal = true
       } else {
-        const brainDir = path.join(process.cwd(), '.brain')
+        const brainDir = getBrainDir(process.cwd())
         rootPath = await downloadAndExtractRepo(owner, repo, brainDir)
       }
 

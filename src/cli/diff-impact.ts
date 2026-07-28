@@ -3,9 +3,10 @@ import { loadConfig } from '../config/loader.js'
 import { initKuzu } from '../graph/client.js'
 import { initSqlite } from '../memory/db.js'
 import { computeLocalDiffImpact } from '../query/diff-impact.js'
+import { getBrainDir } from '../config/paths.js'
 
 export async function diffImpactCommand(cwd: string, _argv: string[]): Promise<void> {
-  const brainDir = path.join(cwd, '.brain')
+  const brainDir = getBrainDir(cwd)
   initKuzu(brainDir)
   initSqlite(brainDir)
 

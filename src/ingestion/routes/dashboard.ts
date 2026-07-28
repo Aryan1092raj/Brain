@@ -3,6 +3,7 @@ import { getDb } from '../../memory/db.js'
 import { getCurrentHotZones } from '../../temporal/hotzone.js'
 import { escapeHtml } from '../helpers.js'
 import type { Config } from '../../config/schema.js'
+import { getGroqStatus, hasGroqApiKey } from '../../query/groq.js'
 
 export function registerDashboardRoute(router: Router, config: Config): void {
   router.get('/', async (req: Request, res: Response) => {
@@ -31,6 +32,8 @@ export function registerDashboardRoute(router: Router, config: Config): void {
 
       const safeRepo = escapeHtml(repo)
       const repoJson = JSON.stringify(repo)
+      const groqConfigured = hasGroqApiKey()
+      const groqStatus = await getGroqStatus()
       const hotzoneRows = hotzones.map(h => `<tr><td>${escapeHtml(h.symbolFqn)}</td><td>${escapeHtml(h.filePath)}</td><td>${h.zScore.toFixed(2)}</td><td>${h.velocity.toFixed(1)}</td></tr>`).join('\n')
       const episodeRows = episodes.map(e => `<li><strong>${escapeHtml(e.date)}</strong><span>${escapeHtml(e.summary.slice(0, 200))}</span></li>`).join('\n')
 
@@ -484,6 +487,14 @@ export function registerDashboardRoute(router: Router, config: Config): void {
     box-shadow: none;
     list-style: inherit;
   }
+  .query-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .query-title { font-size: 18px; font-weight: 900; }
+  .query-status { color: var(--muted); font-size: 12px; font-weight: 750; }
+  .query-status.ready { color: #176b45; }
+  .query-status.missing { color: #a33b4d; }
+  .query-help { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .query-help code { background: var(--field); border: 1px solid var(--line); padding: 2px 5px; }
+  .ask-btn:disabled, textarea:disabled { opacity: 0.58; cursor: not-allowed; transform: none; box-shadow: 2px 2px 0 var(--shadow); }
   
   /* === GRID SECTIONS === */
   .grid-2col {
@@ -791,11 +802,16 @@ export function registerDashboardRoute(router: Router, config: Config): void {
 
   <!-- Query Panel -->
   <div class="query-panel">
-    <div class="query-row">
-      <textarea id="query-input" placeholder="Ask about architecture, risky files, recent changes, decay patterns..."></textarea>
-      <button class="ask-btn" onclick="askBrain()">Ask Brain</button>
+    <div class="query-header">
+      <div class="query-title">Ask your codebase</div>
+      <div class="query-status ${groqConfigured ? 'ready' : 'missing'}">${groqConfigured ? `Groq ready · ${escapeHtml(groqStatus.model)}` : 'Local mode · chat disabled'}</div>
     </div>
-    <div id="chat-output">Ready. Ask anything about your codebase.</div>
+    <div class="query-row">
+      <textarea id="query-input" placeholder="Ask about architecture, risky files, recent changes, decay patterns..." ${groqConfigured ? '' : 'disabled'}></textarea>
+      <button class="ask-btn" onclick="askBrain()" ${groqConfigured ? '' : 'disabled'}>Ask Brain</button>
+    </div>
+    <p class="query-help">${groqConfigured ? `Local guardrails: ${groqStatus.requestsRemainingMinute} requests and ~${groqStatus.tokensRemainingMinute.toLocaleString()} tokens left this minute.` : 'Indexing and graph tools are fully local. To enable chat, add GROQ_API_KEY to .env, then restart brain watch. See .brain/README.md for the setup and free-tier safeguards.'}</p>
+    <div id="chat-output">${groqConfigured ? 'Ready. Ask anything about your codebase.' : 'Chat is optional. Your local graph is ready to use.'}</div>
   </div>
 
   <!-- Two-column grid: Hot Zones + Episodes -->
@@ -833,8 +849,9 @@ export function registerDashboardRoute(router: Router, config: Config): void {
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
 // === GLOBALS ===
-marked.setOptions({ breaks: true, gfm: true });
+if (window.marked) marked.setOptions({ breaks: true, gfm: true });
 const REPO = ${repoJson};
+const GROQ_CONFIGURED = ${groqConfigured};
 let graphData = null;
 let selectedNodeId = null;
 let simulation = null;
@@ -859,14 +876,16 @@ async function askBrain() {
   const input = document.getElementById('query-input');
   const output = document.getElementById('chat-output');
   const q = input.value.trim();
-  if (!q) return;
+  if (!q || !GROQ_CONFIGURED) return;
   output.style.opacity = '0.5';
   output.textContent = 'Thinking...';
   try {
     const r = await fetch('/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo: REPO, prompt: q, stream: false }) });
     const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Chat request failed');
     output.style.opacity = '1';
-    output.innerHTML = d.answer ? marked.parse(d.answer) : (d.error || 'No answer');
+    if (d.answer && window.marked) output.innerHTML = marked.parse(d.answer);
+    else output.textContent = d.answer || d.error || 'No answer';
   } catch (e) {
     output.style.opacity = '1';
     output.textContent = 'Error: ' + e.message;
@@ -994,7 +1013,6 @@ function renderD3Graph(data) {
     .text(d => (d.file || d.label) + (d.kind ? ' · ' + d.kind : '') + (d.decayScore != null ? ' · decay: ' + d.decayScore.toFixed(2) : ''));
 
   // Labels for file nodes
-  const labelNodes = nodes.filter(n => n.type === 'file');
   node.filter(d => d.type === 'file')
     .append('text')
     .attr('dx', d => nodeRadius(d) + 5)

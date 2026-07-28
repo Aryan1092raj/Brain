@@ -1,142 +1,90 @@
 # Brain
 
-> Local-first always-on daemon for codebase intelligence with memory decay, temporal tracking, and knowledge graph capabilities.
+> Local-first codebase intelligence with a graph, memory decay, change impact, and optional Groq chat.
 
-Brain is a persistent codebase memory system. It indexes your repository structure, builds a property graph of files and code symbols (functions, classes, imports, contains, calls), tracks stability with memory decay scores, detects anomaly hot zones, predicts co-changes, and generates instant LLM-friendly prompt digests.
+Brain indexes a repository into a project-local `.brain/` directory. The CLI is installed once globally; the data and configuration stay separate for every project where `brain init` runs.
 
----
+## Quick start
 
-## 🚀 Quick Start & Installation
-
-### Local Global Installation (For Testing on Other Projects)
-
-To install the `brain` CLI command globally on your machine to test it on another codebase:
+Clone and install Brain once:
 
 ```bash
-# 1. Clone this repository and install dependencies
 git clone https://github.com/your-username/brain.git
 cd brain
 npm install
-
-# 2. Build the project
 npm run build
-
-# 3. Link the package globally
 npm link
-# or: npm install -g .
 ```
 
-Now you can use the `brain` CLI command from any folder on your machine!
+Then, in any codebase:
 
 ```bash
-# 4. Go to any other project repository
-cd /path/to/your/other-project
-
-# 5. Initialize the Brain configuration and databases
-brain init
-
-# 6. Scan and index the codebase once
-brain scan
-
-# 7. Start the daemon (runs the background decay scheduler and web dashboard)
-brain watch
+cd /path/to/your/project
+brain init       # creates .brain/ and indexes this project
+brain watch      # starts the dashboard at http://localhost:3747
 ```
 
-Open `http://localhost:3747` in your browser to view the interactive dashboard for your project!
+`brain init` creates `.brain/config.json`, local graph/memory databases, a Groq setup guide, and performs the first index. Run `brain scan` later to re-index manually. `.brain/` is already ignored by Git, so no project state is shared with another codebase.
 
----
+## Local-first features
 
-## 🔗 GitIngest-Style Ingestion (Web / URL routing)
+These work without an API key:
 
-Brain supports GitIngest-style URL routing. If you run Brain as a web service or run it locally, you can instantly ingest any GitHub repository by typing its URL structure directly into the address bar:
+- Knowledge graph of supported TypeScript, JavaScript, and Python symbols and relationships.
+- Memory decay, hot-zone tracking, co-change predictions, and local diff impact.
+- Dashboard, `brain status`, `brain scan`, and local MCP data tools.
+- `AGENTS.md` generation from the local graph.
 
-- **Original GitHub URL**: `https://github.com/facebook/react`
-- **Brain Ingestion URL**: `http://localhost:3747/github.com/facebook/react`
-- **Shortcut URL**: `http://localhost:3747/facebook/react`
+## Optional Groq chat
 
-Visiting this URL will automatically download, extract, parse, and ingest the repository into the property graph, rendering the file tree, LLM prompt digest viewer, and dashboard navigation.
+Chat and AI summaries are disabled unless `GROQ_API_KEY` is detected. Create a key at [console.groq.com/keys](https://console.groq.com/keys), put it in the project’s `.env`, and restart `brain watch`:
 
----
-
-## 🌟 Key Features
-
-- **🧠 Interactive Knowledge Graph** — D3.js force-directed graph of files, symbols, commits, and relationships.
-- **⏳ Memory Decay Simulator** — Ebbinghaus-inspired memory decay scoring with interactive timeline scrubbing in the browser.
-- **🔥 Hot Zone Tracking** — Z-score change velocity anomaly detection for rapidly modified code.
-- **🌊 Ripple Path Blast Radius** — Traverse downstream calls to trace the blast radius of changes.
-- **🔮 Co-Change Prediction** — SQLite-backed engine that calculates commit co-occurrences to predict related modifications.
-- **🤖 AGENTS.md Generator** — Auto-generated codebase temporal status files for Cursor, Windsurf, or Claude coding assistants.
-- **🔌 Model Context Protocol (MCP)** — Emits symbols and decay status directly to LLM editors on stdio.
-
----
-
-## 🛠️ Requirements
-
-- **Node.js** >= 22
-- **npm**
-- **Git**
-- **LLM API Key** (Groq API Key is recommended for fast and cost-effective node summaries. Get a free key at [console.groq.com](https://console.groq.com)).
-
----
-
-## ⚙️ Configuration
-
-Configure your environment by copying `.env.example` to `.env`:
-
-```bash
+```dotenv
 GROQ_API_KEY=your_groq_api_key_here
-GITHUB_TOKEN=your_github_pat_here  # Optional: For private or high-rate-limit remote repository downloads
-BRAIN_PORT=3747
+BRAIN_LLM_MODEL=llama-3.1-8b-instant
 ```
 
-You can customize tracked repositories by editing `brain.config.json` created by `brain init`:
+Brain uses `llama-3.1-8b-instant` by default because it is fast and has a high free-tier daily quota, which suits short codebase questions. It stores one user-level usage ledger in `~/.config/brain/llm-usage.json` so multiple project dashboards share the same conservative minute/day budget, reserve estimated tokens before a request, and respect 429 retry windows. Defaults are 30 RPM, 6,000 TPM, and 14,400 RPD; Groq’s exact limits can vary by organization, so check [Groq’s rate-limit documentation](https://console.groq.com/docs/rate-limits).
 
-```json
-{
-  "repos": [
-    {
-      "name": "my-app",
-      "path": "/absolute/path/to/my-app",
-      "remote": "https://github.com/username/my-app",
-      "languages": ["typescript", "javascript", "python"],
-      "branch": "main"
-    }
-  ],
-  "port": 3747,
-  "logLevel": "info"
-}
+If your console shows different limits, override the local guardrails:
+
+```dotenv
+BRAIN_GROQ_RPM=30
+BRAIN_GROQ_TPM=6000
+BRAIN_GROQ_RPD=14400
 ```
 
----
+Groq limits are organization-wide; creating multiple keys does not create more quota. Full setup instructions are written to `.brain/README.md` during `brain init`.
 
-## 💻 CLI Commands Reference
+## Dashboard and ingestion
+
+Start `brain watch`, then open `http://localhost:3747`. The dashboard exposes the graph, decay simulator, hot zones, recent episodes, pending diff impact, dead-code candidates, and optional chat. Remote GitHub prompt ingestion is also available at `/github.com/{owner}/{repo}` or `/{owner}/{repo}`.
+
+## CLI reference
 
 | Command | Description |
-|:---|:---|
-| `brain init` | Initialize Brain database and configurations in the current directory |
-| `brain scan` | Index the configured repository properties once |
-| `brain watch` | Start the daemon server (web dashboard, webhook ingest, scheduler) |
-| `brain status` | Output tracked file/symbol counts, hot zones, and memory stats |
-| `brain query "<question>"` | Ask a natural language question against the Cypher graph |
-| `brain ask "<question>"` | Query Groq with context-enhanced graph facts |
-| `brain mcp` | Starts the Model Context Protocol stdio server |
+|---|---|
+| `brain init` | Create project-local state and index the current codebase |
+| `brain scan` | Re-index the configured repository |
+| `brain watch` | Start the dashboard, webhook server, and scheduler |
+| `brain status` | Show local file/symbol, memory, and hot-zone counts |
+| `brain query "<question>"` | Use Groq to translate a question into a read-only Cypher query |
+| `brain ask "<question>"` | Ask Groq with graph-grounded context |
+| `brain diff-impact` | Inspect downstream impact of uncommitted changes |
+| `brain mcp` | Start the local MCP stdio server |
 
----
-
-## 🧪 Development & Testing
-
-Run the test suite:
+## Development
 
 ```bash
-# Compile TypeScript files
 npm run build
-
-# Run unit tests inside isolated child processes (prevents Kuzu database locks/segfaults)
 npm test
 ```
 
----
+## Requirements
 
-## 📄 License
+- Node.js 22+
+- npm
+- Git
+- Groq API key only for chat/AI summaries
 
 MIT

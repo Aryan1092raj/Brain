@@ -4,6 +4,7 @@ import { getCurrentHotZones } from '../temporal/hotzone.js'
 import { getDb } from '../memory/db.js'
 import { computeRippleImpact } from '../query/ripple.js'
 import { getGraphOverview } from '../graph/insights.js'
+import { hasGroqApiKey } from '../query/groq.js'
 
 export interface MCPTool {
   name: string
@@ -78,6 +79,7 @@ export async function handleToolCall(toolName: string, args: Record<string, unkn
 
   switch (toolName) {
     case 'brain_ask': {
+      if (!hasGroqApiKey()) throw new Error('brain_ask requires GROQ_API_KEY. Local MCP tools remain available.')
       const prompt = args.prompt as string
       const ctx = buildContext(repo)
       const contextStr = await formatRichContext(ctx)
@@ -152,7 +154,7 @@ export async function handleToolCall(toolName: string, args: Record<string, unkn
       ].filter(Boolean).join(' ')
 
       let summary = fallback
-      if (process.env.GROQ_API_KEY) {
+      if (hasGroqApiKey()) {
         summary = await queryLlm(
           'You explain code graph nodes for an MCP tool. Be concrete. Max 35 words. No markdown.',
           JSON.stringify({ node, connected: neighbors, deadCode: deadCode?.reason ?? null }),
@@ -209,8 +211,9 @@ export function startMCPServer(): void {
       try {
         const result = await handleToolCall(toolName, args)
         send({ jsonrpc: '2.0', id: msg.id, result })
-      } catch (e: any) {
-        send({ jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: e.message } })
+      } catch (e) {
+        const message = e instanceof Error ? e.message : 'Unknown error'
+        send({ jsonrpc: '2.0', id: msg.id, error: { code: -32602, message } })
       }
     }
   }

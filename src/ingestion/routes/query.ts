@@ -1,13 +1,26 @@
 import type { Router, Request, Response } from 'express'
 import { buildContext, formatRichContext } from '../../query/context-builder.js'
 import { streamQuery } from '../../query/engine.js'
+import { getGroqStatus, hasGroqApiKey } from '../../query/groq.js'
 
 export function registerQueryRoute(router: Router): void {
+  router.get('/api/llm-status', async (_req: Request, res: Response) => {
+    res.json(await getGroqStatus())
+  })
+
   router.post('/query', async (req: Request, res: Response) => {
     try {
       const { repo, prompt, stream = false } = req.body
       if (!repo || !prompt) {
         res.status(400).json({ error: 'repo and prompt required' })
+        return
+      }
+      if (!hasGroqApiKey()) {
+        res.status(503).json({
+          code: 'GROQ_API_KEY_MISSING',
+          error: 'Chat is disabled until GROQ_API_KEY is configured.',
+          help: 'Add GROQ_API_KEY to the project .env file and restart brain watch.',
+        })
         return
       }
 
@@ -46,7 +59,14 @@ Keep answers concise but informative.`
       }
     } catch (err) {
       console.error('[brain] query error:', err)
-      res.status(500).json({ error: 'Internal server error' })
+      const error = err as { code?: string; message?: string; retryAt?: number }
+      const status = error.code === 'GROQ_RATE_LIMITED' ? 429 : 500
+      if (res.headersSent) {
+        res.write(`data: ${JSON.stringify({ error: error.message ?? 'Query failed', code: error.code })}\n\n`)
+        res.end()
+        return
+      }
+      res.status(status).json({ code: error.code ?? 'QUERY_FAILED', error: error.message ?? 'Query failed', retryAt: error.retryAt })
     }
   })
 }

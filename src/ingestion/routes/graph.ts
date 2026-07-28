@@ -6,6 +6,7 @@ import { getCurrentHotZones } from '../../temporal/hotzone.js'
 import { predictSymbolCoChanges, predictFileCoChanges } from '../../temporal/co-change.js'
 import { query as queryLlm } from '../../query/engine.js'
 import type { Config } from '../../config/schema.js'
+import { hasGroqApiKey } from '../../query/groq.js'
 
 export function registerGraphRoutes(router: Router, config: Config): void {
   router.get('/graph', async (req: Request, res: Response) => {
@@ -75,7 +76,7 @@ export function registerGraphRoutes(router: Router, config: Config): void {
       ].filter(Boolean).join(' ')
 
       let summary = fallback
-      if (process.env.GROQ_API_KEY) {
+      if (hasGroqApiKey()) {
         summary = await queryLlm(
           'You explain code graph nodes for a debugging dashboard. Be concrete. Max 35 words. No markdown.',
           JSON.stringify({ node, connected: neighbors, deadCode: deadCode?.reason ?? null }),

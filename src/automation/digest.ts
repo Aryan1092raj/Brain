@@ -1,5 +1,5 @@
 import { getDb } from '../memory/db.js'
-import { query } from '../query/engine.js'
+import { hasLlmAccess, query } from '../query/engine.js'
 import type { Config } from '../config/schema.js'
 
 export async function sendDailyDigest(config: Config, repo: string): Promise<void> {
@@ -19,7 +19,7 @@ export async function sendDailyDigest(config: Config, repo: string): Promise<voi
     ORDER BY z_score DESC LIMIT 5
   `).all(repo, since) as Array<{ symbol_fqn: string; z_score: number }>
 
-  if (changes.length === 0) return
+  if (changes.length === 0 || !hasLlmAccess()) return
 
   const summary = changes.map(c => `${c.symbol_fqn} (${c.changes}x)`).join(', ')
   const hotList = hotzones.map(h => `${h.symbol_fqn} z=${h.z_score.toFixed(1)}`).join(', ')

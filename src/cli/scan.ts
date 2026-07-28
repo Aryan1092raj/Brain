@@ -11,23 +11,24 @@ import { detectModules } from '../ingestion/module-detector.js'
 import { writeTier1Events, type RawEvent } from '../memory/tier1.js'
 import { writeChangeEvents } from '../temporal/tracker.js'
 import type { FileChange } from '../ingestion/diff-parser.js'
+import { getBrainDir } from '../config/paths.js'
 
 const IGNORE_DIRS = new Set(['node_modules', '.git', '.brain', 'dist', 'target', 'build', '.next', '.cache', '__pycache__', 'venv', '.env'])
 
-async function walkFiles(dir: string, extMap: Map<string, string>): Promise<string[][]> {
+async function walkFiles(dir: string, extMap: Map<string, string>, rootDir: string): Promise<string[][]> {
   const files: string[][] = []
   const entries = await fs.readdir(dir, { withFileTypes: true })
   for (const entry of entries) {
     if (entry.isDirectory()) {
       if (!IGNORE_DIRS.has(entry.name)) {
-        const sub = await walkFiles(path.join(dir, entry.name), extMap)
+        const sub = await walkFiles(path.join(dir, entry.name), extMap, rootDir)
         files.push(...sub)
       }
     } else if (entry.isFile()) {
       const ext = entry.name.split('.').pop() ?? ''
       const language = extMap.get(ext)
       if (language) {
-        files.push([path.relative(process.cwd(), path.join(dir, entry.name)), language])
+        files.push([path.relative(rootDir, path.join(dir, entry.name)), language])
       }
     }
   }
@@ -57,24 +58,25 @@ function buildExtMap(repoLanguages: string[]): Map<string, string> {
   return map
 }
 
-export async function scan(cwd: string, _argv: string[]): Promise<void> {
+export async function scan(cwd: string, argv: string[]): Promise<void> {
   const config = await loadConfig(cwd)
   const repo = config.repos[0]
   if (!repo) {
-    console.error('[brain/scan] no repos configured in brain.config.json')
+    console.error('[brain/scan] no repos configured. Run brain init again or check .brain/config.json')
     process.exit(1)
   }
 
-  const brainDir = path.join(cwd, '.brain')
+  const brainDir = getBrainDir(cwd)
   initKuzu(brainDir)
   await initGraphSchema()
   initSqlite(brainDir)
   initMemorySchema(getDb())
 
   const extMap = buildExtMap(repo.languages)
-  const fileEntries = await walkFiles(repo.path, extMap)
-  console.info(`[brain/scan] scanning ${repo.path} as repo "${repo.name}"`)
-  console.info(`[brain/scan] found ${fileEntries.length} source files`)
+  const fileEntries = await walkFiles(repo.path, extMap, repo.path)
+  const quiet = argv.includes('--quiet')
+  if (!quiet) console.info(`[brain/scan] scanning ${repo.path} as repo "${repo.name}"`)
+  if (!quiet) console.info(`[brain/scan] found ${fileEntries.length} source files`)
 
   const now = new Date()
   const scanSha = `scan-${now.getTime().toString(36)}`
@@ -100,11 +102,11 @@ export async function scan(cwd: string, _argv: string[]): Promise<void> {
   }
 
   const totalSymbols = deltas.reduce((s, d) => s + d.added.length, 0)
-  console.info(`[brain/scan] parsed ${parsed} files, ${totalSymbols} symbols`)
-  console.info(`[brain/scan] writing to graph...`)
+  if (!quiet) console.info(`[brain/scan] parsed ${parsed} files, ${totalSymbols} symbols`)
+  if (!quiet) console.info(`[brain/scan] writing to graph...`)
 
   const result = await applySymbolDelta(repo.name, scanSha, deltas, now)
-  console.info(`[brain/scan] graph ${result.nodesUpserted}/${result.edgesUpserted}`)
+  if (!quiet) console.info(`[brain/scan] graph ${result.nodesUpserted}/${result.edgesUpserted}`)
 
   const events: RawEvent[] = []
   for (const delta of deltas) {
@@ -127,12 +129,11 @@ export async function scan(cwd: string, _argv: string[]): Promise<void> {
 
   detectModules(repo.name)
 
-  const db = getDb()
-  const totalFiles = (db.prepare(`SELECT COUNT(DISTINCT symbol_fqn) as c FROM change_events WHERE repo = ?`).get(repo.name) as { c: number })?.c ?? deltas.length
-
-  console.info(`[brain/scan] done`)
-  console.info(`  files:   ${deltas.length}`)
-  console.info(`  symbols: ${totalSymbols}`)
-  console.info(`  tier1:   ${events.length} events`)
-  console.info(`\nRun 'brain watch' to start the daemon, or 'brain ask' to query.`)
+  if (!quiet) {
+    console.info(`[brain/scan] done`)
+    console.info(`  files:   ${deltas.length}`)
+    console.info(`  symbols: ${totalSymbols}`)
+    console.info(`  tier1:   ${events.length} events`)
+    console.info(`\nRun 'brain watch' to start the daemon, or 'brain ask' to query.`)
+  }
 }

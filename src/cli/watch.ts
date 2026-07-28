@@ -5,7 +5,7 @@ import { initKuzu, closeKuzu } from '../graph/client.js'
 import { initSqlite, closeDb } from '../memory/db.js'
 import { init } from './init.js'
 import fs from 'node:fs/promises'
-import path from 'node:path'
+import { getBrainDir, getProjectConfigPath } from '../config/paths.js'
 
 let server: import('node:http').Server | null = null
 let inFlight = 0
@@ -15,12 +15,12 @@ export function trackInFlight(delta: number): void {
 }
 
 export async function watch(cwd: string): Promise<void> {
-  const brainDir = path.join(cwd, '.brain')
+  const brainDir = getBrainDir(cwd)
 
   try {
-    await fs.access(brainDir)
+    await fs.access(getProjectConfigPath(cwd))
   } catch {
-    console.info('[brain] .brain not found — auto-initialising...')
+    console.info('[brain] project is not initialized — running brain init...')
     await init(cwd)
   }
 

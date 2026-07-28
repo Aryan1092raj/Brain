@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ConfigSchema, type Config, type RepoConfig } from './schema.js'
+import { getLegacyConfigPath, getProjectConfigPath } from './paths.js'
 
 let _config: Config | null = null
 
@@ -34,11 +35,31 @@ function withEnvOverrides(config: unknown): unknown {
 }
 
 export async function loadConfig(cwd: string): Promise<Config> {
-  const configPath = path.join(cwd, 'brain.config.json')
-  const content = await fs.readFile(configPath, 'utf-8')
-  const parsed = JSON.parse(content)
-  _config = ConfigSchema.parse(withEnvOverrides(parsed))
-  return _config
+  const candidates = [getProjectConfigPath(cwd), getLegacyConfigPath(cwd)]
+  for (const configPath of candidates) {
+    try {
+      const content = await fs.readFile(configPath, 'utf-8')
+      const parsed = JSON.parse(content)
+      const validated = ConfigSchema.parse(withEnvOverrides(parsed))
+      _config = {
+        ...validated,
+        repos: validated.repos.map(repo => ({
+          ...repo,
+          path: path.resolve(cwd, repo.path),
+        })),
+      }
+      return _config
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      if (error instanceof SyntaxError) {
+        throw new Error(`[brain] invalid JSON in ${configPath}`)
+      }
+      if (error instanceof Error && error.message.startsWith('[')) throw error
+      throw error
+    }
+  }
+
+  throw new Error(`[brain] this project is not initialized. Run "brain init" in ${path.resolve(cwd)}`)
 }
 
 export function getConfig(): Config {

@@ -1,6 +1,6 @@
 import { getDb } from './db.js'
 import { getTier1EventsSince } from './tier1.js'
-import { getClient, getModel } from '../query/engine.js'
+import { hasLlmAccess, query } from '../query/engine.js'
 
 const TTL_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -16,6 +16,7 @@ export async function compressTier1ToTier2(repo: string): Promise<void> {
   const since = Date.now() - 24 * 60 * 60 * 1000
   const events = getTier1EventsSince(repo, since)
   if (events.length === 0) return
+  if (!hasLlmAccess()) return
 
   const filesTouched = [...new Set(events.map(e => e.payload.file))]
   const symbolsTouched = [...new Set(events.map(e => e.payload.fqn))]
@@ -24,21 +25,9 @@ export async function compressTier1ToTier2(repo: string): Promise<void> {
     `${e.eventType}: ${e.payload.fqn} (${e.payload.kind}) in ${e.payload.file}`
   ).join('\n')
 
-  const response = await getClient().chat.completions.create({
-    model: getModel(),
-    max_tokens: 400,
-    messages: [
-      {
-        role: 'system',
-        content: `You are a codebase historian. Summarise the following code changes for a team.
+  const summary = await query(`You are a codebase historian. Summarise the following code changes for a team.
 Be factual. Max 3 sentences. Focus on: what changed, which areas, any patterns.
-Plain text only.`,
-      },
-      { role: 'user', content: eventsText },
-    ],
-  })
-
-  const summary = response.choices[0]?.message?.content ?? 'No summary available'
+Plain text only.`, eventsText, { maxTokens: 300, temperature: 0.2 })
 
   const now = Date.now()
   db.prepare(`

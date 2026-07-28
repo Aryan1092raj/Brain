@@ -1,17 +1,5 @@
-import OpenAI from 'openai'
 import { KUZU_DDL } from '../graph/schema.js'
-
-let _client: OpenAI | null = null
-
-function getClient(): OpenAI {
-  if (!_client) {
-    _client = new OpenAI({
-      apiKey: process.env.GROQ_API_KEY ?? '',
-      baseURL: 'https://api.groq.com/openai/v1',
-    })
-  }
-  return _client
-}
+import { query as queryLlm } from './engine.js'
 
 const SCHEMA_CONTEXT = `
 Graph Schema:
@@ -25,16 +13,7 @@ File properties: path, repo, language, decay_score, last_touched
 `
 
 export async function translateNLToCypher(question: string): Promise<string> {
-  const client = getClient()
-
-  const response = await client.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
-    max_tokens: 300,
-    temperature: 0.1,
-    messages: [
-      {
-        role: 'system',
-        content: `You are a Cypher query generator for a code knowledge graph.
+  const cypher = await queryLlm(`You are a Cypher query generator for a code knowledge graph.
 ${SCHEMA_CONTEXT}
 
 Rules:
@@ -44,13 +23,8 @@ Rules:
 - Use property filters like {repo: $repo} when needed
 - For "who owns", look for Module nodes and BelongsTo edges
 - For "what calls", use Calls edges
-- For "impact of", use Calls edges with path traversal`,
-      },
-      { role: 'user', content: question },
-    ],
-  })
+- For "impact of", use Calls edges with path traversal`, question, { maxTokens: 300, temperature: 0.1 })
 
-  const cypher = response.choices[0]?.message?.content?.trim() ?? ''
   return cypher.replace(/```cypher\n?/g, '').replace(/```\n?/g, '').trim()
 }
 

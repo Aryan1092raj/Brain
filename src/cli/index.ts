@@ -2,6 +2,7 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { getBrainDir } from '../config/paths.js'
 
 // Load .env file
 async function loadEnv() {
@@ -10,8 +11,8 @@ async function loadEnv() {
     const content = await fs.readFile(envPath, 'utf-8')
     for (const line of content.split('\n')) {
       const match = line.match(/^([^=]+)=(.*)$/)
-      if (match && match[1] && match[2]) {
-        process.env[match[1].trim()] = match[2].trim()
+      if (match && match[1] && match[2] && !process.env[match[1].trim()]) {
+        process.env[match[1].trim()] = match[2].trim().replace(/^['"]|['"]$/g, '')
       }
     }
     console.info('[brain] loaded .env')
@@ -33,6 +34,7 @@ import { diffImpactCommand } from './diff-impact.js'
 
 const cmd = process.argv[2]
 const cwd = process.cwd()
+process.env.BRAIN_DIR = getBrainDir(cwd)
 
 if (cmd === 'init') {
   init(cwd).catch(err => {
@@ -75,7 +77,11 @@ if (cmd === 'init') {
     console.error('[brain] diff-impact failed:', err)
     process.exit(1)
   })
+} else if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
+  console.info('Usage: brain [init|watch|scan|status|query|ask|mcp|diff-impact]')
+  console.info('Run "brain init" once in each project. It creates .brain/ and indexes the codebase.')
 } else {
   console.info('Usage: brain [init|watch|scan|status|query|ask|mcp|diff-impact]')
+  console.info('Run "brain init" once in each project. It creates .brain/ and indexes the codebase.')
   process.exit(1)
 }

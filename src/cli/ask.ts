@@ -1,12 +1,12 @@
 import { basename } from 'node:path'
-import path from 'node:path'
 import * as readline from 'node:readline'
 import { buildContext, formatRichContext, buildSystemPrompt } from '../query/context-builder.js'
-import { streamQuery } from '../query/engine.js'
+import { hasLlmAccess, streamQuery } from '../query/engine.js'
 import { initSqlite, getDb } from '../memory/db.js'
 import { initMemorySchema } from '../memory/schema.js'
 import { loadConfig } from '../config/loader.js'
 import { initKuzu } from '../graph/client.js'
+import { getBrainDir } from '../config/paths.js'
 
 function ensureDb(brainDir: string) {
   initSqlite(brainDir)
@@ -57,10 +57,13 @@ async function runQuery(repo: string, question: string, systemPrompt: string): P
 }
 
 export async function ask(cwd: string, argv: string[]): Promise<void> {
+  if (!hasLlmAccess()) {
+    throw new Error('Chat is disabled. Set GROQ_API_KEY in this project\'s .env file, restart the command, and try again.')
+  }
   const { query: queryText, options } = parseArgs(argv)
   const config = await loadConfig(cwd)
   const repo = options.repo ?? process.env.BRAIN_REPO ?? config.repos[0]?.name ?? basename(cwd)
-  const brainDir = path.join(cwd, '.brain')
+  const brainDir = getBrainDir(cwd)
   ensureDb(brainDir)
   initKuzu(brainDir)
 

@@ -3,9 +3,10 @@ import { loadConfig } from '../config/loader.js'
 import { initSqlite, getDb } from '../memory/db.js'
 import { initMemorySchema } from '../memory/schema.js'
 import { getCurrentHotZones } from '../temporal/hotzone.js'
+import { getBrainDir } from '../config/paths.js'
 
 export async function status(cwd: string, _argv: string[]): Promise<void> {
-  const brainDir = path.join(cwd, '.brain')
+  const brainDir = getBrainDir(cwd)
   initSqlite(brainDir)
   initMemorySchema(getDb())
 

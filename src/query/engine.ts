@@ -1,21 +1,27 @@
 import OpenAI from 'openai'
+import { estimateTokens, getGroqApiKey, getGroqModel, hasGroqApiKey, recordGroqRateLimit, reserveGroqRequest, GroqRateLimitError, GroqUnavailableError } from './groq.js'
 
 let _client: OpenAI | null = null
 
 export function getClient(): OpenAI {
+  const apiKey = getGroqApiKey()
+  if (!apiKey) throw new GroqUnavailableError()
   if (!_client) {
-    const apiKey = process.env.BRAIN_LLM_API_KEY || process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || ''
-    const baseURL = process.env.BRAIN_LLM_BASE_URL || (process.env.OPENAI_API_KEY ? undefined : 'https://api.groq.com/openai/v1')
     _client = new OpenAI({
       apiKey,
-      baseURL,
+      baseURL: 'https://api.groq.com/openai/v1',
+      maxRetries: 0,
     })
   }
   return _client
 }
 
 export function getModel(): string {
-  return process.env.BRAIN_LLM_MODEL || (process.env.OPENAI_API_KEY ? 'gpt-4o-mini' : 'llama-3.3-70b-versatile')
+  return getGroqModel()
+}
+
+export function hasLlmAccess(): boolean {
+  return hasGroqApiKey()
 }
 
 export interface QueryOptions {
@@ -29,17 +35,25 @@ export async function* streamQuery(
   user: string,
   opts: QueryOptions = {}
 ): AsyncGenerator<string> {
-  const client = getClient()
-  const stream = await client.chat.completions.create({
-    model: getModel(),
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
-    temperature: opts.temperature ?? 0.7,
-    max_tokens: opts.maxTokens ?? 2048,
-    stream: true,
-  })
+  const maxTokens = opts.maxTokens ?? 700
+  await reserveGroqRequest(estimateTokens(system, user, maxTokens))
+  let stream
+  try {
+    stream = await getClient().chat.completions.create({
+      model: getModel(),
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      temperature: opts.temperature ?? 0.7,
+      max_tokens: maxTokens,
+      stream: true,
+    })
+  } catch (error) {
+    const retryAt = await recordGroqRateLimit(error)
+    if (retryAt) throw new GroqRateLimitError(retryAt)
+    throw error
+  }
 
   for await (const chunk of stream) {
     const content = chunk.choices[0]?.delta?.content
@@ -52,17 +66,25 @@ export async function query(
   user: string,
   opts: QueryOptions = {}
 ): Promise<string> {
-  const client = getClient()
-  const response = await client.chat.completions.create({
-    model: getModel(),
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
-    temperature: opts.temperature ?? 0.7,
-    max_tokens: opts.maxTokens ?? 2048,
-    stream: false,
-  })
+  const maxTokens = opts.maxTokens ?? 700
+  await reserveGroqRequest(estimateTokens(system, user, maxTokens))
+  let response
+  try {
+    response = await getClient().chat.completions.create({
+      model: getModel(),
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      temperature: opts.temperature ?? 0.7,
+      max_tokens: maxTokens,
+      stream: false,
+    })
+  } catch (error) {
+    const retryAt = await recordGroqRateLimit(error)
+    if (retryAt) throw new GroqRateLimitError(retryAt)
+    throw error
+  }
 
   return response.choices[0]?.message?.content ?? ''
 }
