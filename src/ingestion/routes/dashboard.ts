@@ -887,9 +887,17 @@ function decayColor(score) {
 }
 
 function interpolateColor(from, to, t) {
-  const parse = value => value.match(/[\da-f]{2}/gi).map(part => parseInt(part, 16));
-  const a = parse(from.slice(1));
-  const b = parse(to.slice(1));
+  const parse = (value, fallback) => {
+    const normalized = typeof value === 'string' ? value.replace(/^#/, '') : '';
+    if (!/^[\\da-f]{6}$/i.test(normalized)) return fallback;
+    return [
+      parseInt(normalized.slice(0, 2), 16),
+      parseInt(normalized.slice(2, 4), 16),
+      parseInt(normalized.slice(4, 6), 16),
+    ];
+  };
+  const a = parse(from, [255, 193, 116]);
+  const b = parse(to, [100, 233, 163]);
   return '#' + a.map((channel, index) => Math.round(channel + (b[index] - channel) * t).toString(16).padStart(2, '0')).join('');
 }
 
@@ -924,10 +932,19 @@ async function loadGraphData() {
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'Graph request failed');
     graphData = data;
-    metrics.textContent = data.metrics.nodeCount + ' nodes · ' + data.metrics.edgeCount + ' edges · ' + (data.metrics.hotZoneCount || 0) + ' hot zones';
-    renderD3Graph(data);
-    scrubTimeline(timelineDays);
-    window.originalDeadCode = data.deadCode || [];
+    const nodeCount = Number(data.metrics?.nodeCount) || (Array.isArray(data.nodes) ? data.nodes.length : 0);
+    const edgeCount = Number(data.metrics?.edgeCount) || (Array.isArray(data.edges) ? data.edges.length : 0);
+    metrics.textContent = nodeCount + ' nodes · ' + edgeCount + ' edges · ' + (Number(data.metrics?.hotZoneCount) || 0) + ' hot zones';
+
+    try {
+      renderD3Graph(data);
+      scrubTimeline(timelineDays);
+    } catch (graphError) {
+      console.error('Graph render failed:', graphError);
+      metrics.textContent = 'Graph display issue — data is still indexed. Refresh after updating Brain.';
+    }
+
+    window.originalDeadCode = Array.isArray(data.deadCode) ? data.deadCode : [];
     renderDeadCode(window.originalDeadCode);
   } catch (e) {
     metrics.textContent = 'Graph unavailable: ' + e.message;
@@ -1024,9 +1041,13 @@ function renderD3Graph(data) {
   const height = Math.max(280, rect.height);
   svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
 
-  const nodes = data.nodes.map(n => ({ ...n }));
+  const nodes = (Array.isArray(data?.nodes) ? data.nodes : [])
+    .filter(n => n && typeof n.id === 'string')
+    .map(n => ({ ...n }));
   const nodeById = new Map(nodes.map(n => [n.id, n]));
-  const edges = data.edges.filter(e => nodeById.has(e.source) && nodeById.has(e.target)).map(e => ({ ...e }));
+  const edges = (Array.isArray(data?.edges) ? data.edges : [])
+    .filter(e => e && nodeById.has(e.source) && nodeById.has(e.target))
+    .map(e => ({ ...e }));
   graphState.svg = svg;
   graphState.root = createSvgElement('g');
   graphState.nodes = nodes;
@@ -1416,7 +1437,7 @@ async function computeRipple(fqn, btn) {
 function renderDeadCode(items) {
   const list = document.getElementById('dead-code-list');
   list.innerHTML = '';
-  if (!items.length) {
+  if (!Array.isArray(items) || !items.length) {
     list.innerHTML = '<p class="empty-state">No candidates found.</p>';
     return;
   }
