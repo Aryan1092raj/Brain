@@ -4,23 +4,24 @@ node_modules/
 # TypeScript build outputs
 dist/
 
-# Local databases & graph directories
+# Brain project state (created by `brain init`)
 .brain/
+brain.config.json
 *.db
 *.db-journal
+*.sqlite
+*.sqlite3
 *.kuzu
 graphify-out/
 .opencode/
 .opencode.bak/
 open-design/
+implementation_plan.md
 
 # Environment variables & secrets
 .env
-.env.local
-.env.development
-.env.test
-.env.production
-brain.config.json
+.env.*
+!.env.example
 
 # Logs
 *.log
@@ -36,6 +37,8 @@ Thumbs.db
 *.bak
 *.tmp
 npm-link-cache/
+coverage/
+*.tsbuildinfo
 brain@*
 npx
 npx-*

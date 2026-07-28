@@ -14,7 +14,7 @@ try {
   assert.equal(hasGroqApiKey(), false)
   await assert.rejects(reserveGroqRequest(100), GroqUnavailableError)
 
-  process.env.GROQ_API_KEY = 'gsk_test_key'
+  process.env.GROQ_API_KEY = 'test-groq-key'
   await reserveGroqRequest(100)
   const status = await getGroqStatus()
   assert.equal(status.configured, true)
