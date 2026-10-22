@@ -9,13 +9,25 @@ async function loadEnv() {
   const envPath = path.join(process.cwd(), '.env')
   try {
     const content = await fs.readFile(envPath, 'utf-8')
-    for (const line of content.split('\n')) {
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim()
+      if (!line || line.startsWith('#')) continue
       const match = line.match(/^([^=]+)=(.*)$/)
-      if (match && match[1] && match[2] && !process.env[match[1].trim()]) {
-        process.env[match[1].trim()] = match[2].trim().replace(/^['"]|['"]$/g, '')
+      if (match && match[1] && match[2] !== undefined) {
+        const key = match[1].trim()
+        let val = match[2].trim()
+        if (!val.startsWith("'") && !val.startsWith('"')) {
+          val = val.replace(/\s+#.*$/, '')
+        }
+        val = val.replace(/^['"]|['"]$/g, '')
+        if (key && val && !process.env[key]) {
+          process.env[key] = val
+        }
       }
     }
-    console.info('[brain] loaded .env')
+    if (process.argv[2] !== 'mcp') {
+      console.info('[brain] loaded .env')
+    }
   } catch {
     // .env is optional
   }
