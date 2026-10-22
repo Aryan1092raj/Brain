@@ -221,7 +221,7 @@ export async function generateRepoDigest(
       const childPrefix = isLast ? '    ' : '│   '
 
       const fullPath = path.join(dir, entry.name)
-      const relativePath = path.relative(rootDir, fullPath)
+      const relativePath = path.relative(rootDir, fullPath).replaceAll(path.sep, '/')
 
       if (shouldIgnorePath(relativePath, ignorePatterns)) {
         continue

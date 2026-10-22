@@ -3,23 +3,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getBrainDir } from '../config/paths.js'
+import { loadEnv } from './env.js'
 
-// Load .env file
-async function loadEnv() {
-  const envPath = path.join(process.cwd(), '.env')
-  try {
-    const content = await fs.readFile(envPath, 'utf-8')
-    for (const line of content.split('\n')) {
-      const match = line.match(/^([^=]+)=(.*)$/)
-      if (match && match[1] && match[2] && !process.env[match[1].trim()]) {
-        process.env[match[1].trim()] = match[2].trim().replace(/^['"]|['"]$/g, '')
-      }
-    }
-    console.info('[brain] loaded .env')
-  } catch {
-    // .env is optional
-  }
-}
 
 await loadEnv()
 
