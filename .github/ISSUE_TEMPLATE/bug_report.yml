@@ -1,0 +1,32 @@
+name: Bug report
+description: Something in Brain does not work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you ran, what you expected, and what you got. Paste exact error text.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. brain init
+        2. brain watch
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: Node.js version and OS.
+      placeholder: Node 22.11, Ubuntu 24.04
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: Do not paste API keys or your `.env` file.

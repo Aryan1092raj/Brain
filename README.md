@@ -9,8 +9,8 @@ Brain indexes a repository into a project-local `.brain/` directory. The CLI is 
 Clone and install Brain once:
 
 ```bash
-git clone https://github.com/Aryan1092raj/Brain.git
-cd brain
+git clone https://github.com/Google-Developers-Group-IIT-MANDI/Brain.git
+cd Brain
 npm install
 npm run build
 npm link
@@ -97,11 +97,17 @@ npm run build
 npm test
 ```
 
+## Contributing
+
+Issues and pull requests are welcome, including from first-time contributors. Look for issues labelled `good first issue`. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup and the pull request process, and follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Requirements
 
 - Node.js 22+
 - npm
 - Git
 - Groq API key only for chat/AI summaries
+
+## License
 
 MIT
