@@ -102,12 +102,9 @@ npm test
 Issues and pull requests are welcome, including from first-time contributors. Look for issues labelled `good first issue`. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup and the pull request process, and follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Requirements
-
-- Node.js 22+
-- npm
-- Git
-- Groq API key only for chat/AI summaries
-
+```bash
+pip install -r requirement.txt
+```
 ## License
 
 MIT
