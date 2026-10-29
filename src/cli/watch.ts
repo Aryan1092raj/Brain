@@ -53,7 +53,7 @@ export async function watch(cwd: string): Promise<void> {
       await new Promise(r => setTimeout(r, 100))
     }
 
-    closeKuzu()
+    await closeKuzu()
     closeDb()
     console.info('[brain] shutdown complete')
     process.exit(0)

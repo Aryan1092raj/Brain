@@ -21,7 +21,7 @@ try {
   const graph = await getGraphOverview(config.repos[0]?.name ?? '')
   assert.ok(graph.metrics.nodeCount >= 2)
 } finally {
-  closeKuzu()
+  await closeKuzu()
   closeDb()
   await fs.rm(tmpDir, { recursive: true, force: true })
 }

@@ -66,7 +66,7 @@ try {
   const score = res[0].decay
   assert.ok(score > 0.30 && score < 0.40)
 } finally {
-  closeKuzu()
+  await closeKuzu()
   closeDb()
   await fs.rm(tmpDir, { recursive: true, force: true })
 }
