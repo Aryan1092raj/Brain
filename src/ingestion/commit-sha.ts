@@ -1,19 +1,15 @@
-type UnknownRecord = Record<string, unknown>
-
-function asRecord(value: unknown): UnknownRecord {
+function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return {}
   }
 
-  return value as UnknownRecord
+  return value as Record<string, unknown>
 }
 
 export function getValidatedCommitSha(
   payload: Record<string, unknown>,
+  isPR: boolean,
 ): string | null {
-  const isPR = payload.pull_request !== undefined &&
-    payload.pull_request !== null
-
   const rawSha = isPR
     ? asRecord(asRecord(payload.pull_request).head).sha
     : asRecord(payload.head_commit).id
