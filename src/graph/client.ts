@@ -44,8 +44,7 @@ export function getKuzuClient(): KuzuClient {
     throw new Error('Kuzu is shutting down')
   }
 
-  // Reuse one connection instead of creating an untracked connection
-  // every time getKuzuClient() is called.
+  // Reuse one connection instead of creating untracked connections.
   if (!_conn) {
     _conn = new Connection(_db)
   }
@@ -69,10 +68,32 @@ async function acquireLock<T>(
 
   const next = _queryChain.then(fn)
 
-  // A failed query must not prevent subsequent queued queries from running.
+  // A failed query must not block subsequent queued queries.
   _queryChain = next.catch(() => undefined)
 
   return next
+}
+
+// Prepare and execute a parameterised or regular query.
+async function executeQuery(
+  conn: Connection,
+  cypher: string,
+  params?: Record<string, unknown>,
+) {
+  if (params && Object.keys(params).length > 0) {
+    const stmt = await conn.prepare(cypher)
+
+    if (!stmt.isSuccess()) {
+      throw new Error(
+        `Failed to prepare Cypher statement: ${stmt.getErrorMessage()}\n` +
+        `Query: ${cypher}`,
+      )
+    }
+
+    return conn.execute(stmt, params as any)
+  }
+
+  return conn.query(cypher)
 }
 
 export class KuzuClient {
@@ -86,23 +107,7 @@ export class KuzuClient {
     params?: Record<string, unknown>,
   ): Promise<void> {
     await acquireLock(this.conn, this.generation, async () => {
-      let result
-
-      if (params && Object.keys(params).length > 0) {
-        const stmt = await this.conn.prepare(cypher)
-
-        if (!stmt.isSuccess()) {
-          throw new Error(
-            `Failed to prepare Cypher statement: ${stmt.getErrorMessage()}\n` +
-            `Query: ${cypher}`,
-          )
-        }
-
-        result = await this.conn.execute(stmt, params as any)
-      } else {
-        result = await this.conn.query(cypher)
-      }
-
+      const result = await executeQuery(this.conn, cypher, params)
       const results = Array.isArray(result) ? result : [result]
 
       try {
@@ -126,23 +131,7 @@ export class KuzuClient {
     params?: Record<string, unknown>,
   ): Promise<T[]> {
     return acquireLock(this.conn, this.generation, async () => {
-      let result
-
-      if (params && Object.keys(params).length > 0) {
-        const stmt = await this.conn.prepare(cypher)
-
-        if (!stmt.isSuccess()) {
-          throw new Error(
-            `Failed to prepare Cypher statement: ${stmt.getErrorMessage()}\n` +
-            `Query: ${cypher}`,
-          )
-        }
-
-        result = await this.conn.execute(stmt, params as any)
-      } else {
-        result = await this.conn.query(cypher)
-      }
-
+      const result = await executeQuery(this.conn, cypher, params)
       const results = Array.isArray(result) ? result : [result]
 
       try {
@@ -163,7 +152,7 @@ export class KuzuClient {
 }
 
 export function closeKuzu(): Promise<void> {
-  // Reuse an ongoing shutdown operation if another caller arrives.
+  // Reuse an ongoing shutdown operation.
   if (_closePromise) {
     return _closePromise
   }
@@ -178,35 +167,33 @@ export function closeKuzu(): Promise<void> {
   const conn = _conn
 
   const closing = (async () => {
-    try {
-      // Finish every query that was queued before shutdown began.
-      await _queryChain
+    // Finish every query queued before shutdown began.
+    await _queryChain
 
-      // Close the connection before closing its database.
-      if (conn) {
-        await conn.close()
+    // Close the connection before closing its database.
+    if (conn) {
+      await conn.close()
 
-        if (_conn === conn) {
-          _conn = null
-        }
+      if (_conn === conn) {
+        _conn = null
       }
-
-      await db.close()
-
-      // Clear state only after successful database closure.
-      if (_db === db) {
-        _db = null
-        _dbPath = null
-        _generation += 1
-      }
-    } finally {
-      _isClosing = false
     }
+
+    await db.close()
+
+    // Clear state only after successful database closure.
+    if (_db === db) {
+      _db = null
+      _dbPath = null
+      _generation += 1
+    }
+
+    _isClosing = false
   })()
 
   _closePromise = closing
 
-  // Clear the stored promise on both success and failure.
+  // Clear the stored promise after either success or failure.
   void closing.then(
     () => {
       if (_closePromise === closing) {
