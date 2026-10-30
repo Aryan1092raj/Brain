@@ -87,7 +87,7 @@ try {
   assert.ok(agentsMdContent.includes('Implemented major login refactoring'))
   assert.ok(agentsMdContent.includes('hotFunc'))
 } finally {
-  closeKuzu()
+  await closeKuzu()
   closeDb()
   await fs.rm(tmpDir, { recursive: true, force: true })
 }
