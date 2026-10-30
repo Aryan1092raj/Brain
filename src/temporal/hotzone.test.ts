@@ -91,7 +91,7 @@ try {
   const current = getCurrentHotZones('test-repo')
   assert.ok(current.some(c => c.symbolFqn === 'test-repo:src/hot.ts:hotFunc'))
 } finally {
-  closeKuzu()
+  await closeKuzu()
   closeDb()
   await fs.rm(tmpDir, { recursive: true, force: true })
 }

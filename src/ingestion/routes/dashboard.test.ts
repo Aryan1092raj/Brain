@@ -60,7 +60,7 @@ try {
   assert.equal(interpolateColor('var(--pink)', null, 0.5), '#b2d58c')
 } finally {
   if (server) await new Promise<void>(resolve => server!.close(() => resolve()))
-  closeKuzu()
+  await closeKuzu()
   closeDb()
   if (originalGroqKey === undefined) delete process.env.GROQ_API_KEY
   else process.env.GROQ_API_KEY = originalGroqKey
