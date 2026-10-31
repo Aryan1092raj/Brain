@@ -95,6 +95,6 @@ try {
   assert.ok(report.includes('symB'))
   assert.ok(report.includes('symC'))
 } finally {
-  closeKuzu()
+  await closeKuzu()
   await fs.rm(tmpDir, { recursive: true, force: true })
 }

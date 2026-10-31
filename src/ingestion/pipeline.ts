@@ -1,3 +1,4 @@
+
 import { parseDiff } from './diff-parser.js'
 import { extractSymbolDelta } from './tree-sitter.js'
 import { applySymbolDelta } from '../graph/writer.js'
@@ -13,17 +14,31 @@ import { detectModules } from './module-detector.js'
 import { commentOnPR } from '../automation/pr-commenter.js'
 import { reviewCommit } from '../automation/code-reviewer.js'
 import { hasGroqApiKey } from '../query/groq.js'
+import { getValidatedCommitSha } from './commit-sha.js'
 
 export async function processPushEvent(repo: RepoConfig, payload: Record<string, unknown>): Promise<void> {
   const t0 = Date.now()
 
   const isPR = !!(payload.pull_request)
+
+  // Branch deletion events do not represent a commit to process.
+  if (!isPR && payload.deleted === true) {
+    console.info(`[brain] skipping branch deletion event for ${repo.name}`)
+    return
+  }
+
   const headCommit = payload.head_commit as Record<string, unknown> ?? {}
   const prPayload = payload.pull_request as Record<string, unknown> ?? {}
 
-  const commitSha = isPR
-    ? (prPayload.head as Record<string, unknown>)?.sha as string
-    : headCommit.id as string
+  const commitSha = getValidatedCommitSha(payload, isPR)
+
+  if (!commitSha) {
+    console.warn(
+      `[brain] skipping event with missing or invalid commit SHA for ${repo.name}`,
+    )
+    return
+  }
+
   const timestamp = isPR
     ? new Date((prPayload.updated_at as string) ?? Date.now())
     : new Date(headCommit.timestamp as string)
